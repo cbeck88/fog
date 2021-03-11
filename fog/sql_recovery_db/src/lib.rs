@@ -16,7 +16,7 @@ mod proto_types;
 mod schema;
 mod sql_types;
 
-use crate::sql_types::UserEventType;
+use crate::sql_types::{SqlCompressedRistrettoPublic, UserEventType};
 use core::cmp::Ordering;
 use diesel::{
     pg::PgConnection,
@@ -249,48 +249,49 @@ impl RecoveryDb for SqlRecoveryDb {
         let conn = self.pool.get()?;
 
         use schema::ingress_keys::dsl;
-        let key_records: Vec<models::IngressKey> = dsl::ingress_keys
-            .filter(dsl::start_block.ge(start_block_at_least as i64))
-            .load(&conn)?;
+        let query = dsl::ingress_keys
+            .select((
+                dsl::ingress_public_key,
+                dsl::start_block,
+                dsl::pubkey_expiry,
+                dsl::retired,
+                diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                    "(SELECT MAX(block_number) FROM ingested_blocks WHERE ingress_keys.ingress_public_key = ingested_blocks.ingress_public_key)"
+                ).nullable(),
 
-        let mut key_records = key_records
-            .iter()
+            ))
+            .filter(dsl::start_block.ge(start_block_at_least as i64));
+
+        // The list of fields here must match the .select() clause above.
+        let mut records = query
+            .load::<(SqlCompressedRistrettoPublic, i64, i64, bool, Option<i64>)>(&conn)?
+            .into_iter()
             .map(
-                |ingress_key_data| -> Result<IngressPublicKeyRecord, Error> {
+                |(ingress_public_key, start_block, pubkey_expiry, retired, last_scanned_block)| {
                     let status = IngressPublicKeyStatus {
-                        start_block: ingress_key_data.start_block as u64,
-                        pubkey_expiry: ingress_key_data.pubkey_expiry as u64,
-                        retired: ingress_key_data.retired,
+                        start_block: start_block as u64,
+                        pubkey_expiry: pubkey_expiry as u64,
+                        retired,
                     };
 
-                    // Look in ingested_blocks table for last scanned block
-                    let ingress_key: CompressedRistrettoPublic =
-                        *ingress_key_data.ingress_public_key;
-                    let key_bytes: &[u8] = ingress_key.as_ref();
-                    use schema::ingested_blocks::dsl;
-                    let maybe_index: Option<i64> = dsl::ingested_blocks
-                        .filter(dsl::ingress_public_key.eq(key_bytes))
-                        .select(diesel::dsl::max(dsl::block_number))
-                        .first(&conn)?;
-
-                    Ok(IngressPublicKeyRecord {
-                        key: ingress_key,
+                    IngressPublicKeyRecord {
+                        key: *ingress_public_key,
                         status,
-                        last_scanned_block: maybe_index.map(|x| x as u64),
-                    })
+                        last_scanned_block: last_scanned_block.map(|v| v as u64),
+                    }
                 },
             )
-            .collect::<Result<Vec<IngressPublicKeyRecord>, Error>>()?;
+            .collect::<Vec<_>>();
 
         // Sort them as described in get_ingress_key_records trait comments
-        key_records.sort_unstable_by(|a, b| -> Ordering {
+        records.sort_unstable_by(|a, b| -> Ordering {
             a.status
                 .start_block
                 .cmp(&b.status.start_block)
                 .then_with(|| a.key.as_bytes().cmp(b.key.as_bytes()))
         });
 
-        Ok(key_records)
+        Ok(records)
     }
 
     fn new_ingest_invocation(
