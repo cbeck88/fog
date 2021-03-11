@@ -424,16 +424,14 @@ where
         if shared_state.highest_processed_block_count != highest_processed_block_count {
             shared_state.highest_processed_block_count = highest_processed_block_count;
             self.last_unblocked_at = Instant::now();
-        } else {
-            if self.last_unblocked_at.elapsed() >= Duration::from_secs(60) {
-                if let Some(reason_we_stopped) = reason_we_stopped {
-                    log::warn!(self.logger, "We seem to be stuck at highest_processed_block_count = {} for at least a minute... we are blocked on an ingress key making progress: {:?}", highest_processed_block_count, reason_we_stopped);
-                } else {
-                    log::info!(self.logger, "We seem to be stuck at highest_processed_block_count = {} for at least a minute... we have processed all blocks known to the recovery database", highest_processed_block_count);
-                }
-                // We are still blocked but we don't need to log for another minute
-                self.last_unblocked_at = Instant::now();
+        } else if self.last_unblocked_at.elapsed() >= Duration::from_secs(60) {
+            if let Some(reason_we_stopped) = reason_we_stopped {
+                log::warn!(self.logger, "We seem to be stuck at highest_processed_block_count = {} for at least a minute... we are blocked on an ingress key making progress: {:?}", highest_processed_block_count, reason_we_stopped);
+            } else {
+                log::info!(self.logger, "We seem to be stuck at highest_processed_block_count = {} for at least a minute... we have processed all blocks known to the recovery database", highest_processed_block_count);
             }
+            // We are still blocked but we don't need to log for another minute
+            self.last_unblocked_at = Instant::now();
         }
 
         counters::HIGHEST_PROCESSED_BLOCK_COUNT
