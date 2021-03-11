@@ -17,7 +17,6 @@ mod schema;
 mod sql_types;
 
 use crate::sql_types::{SqlCompressedRistrettoPublic, UserEventType};
-use core::cmp::Ordering;
 use diesel::{
     pg::PgConnection,
     prelude::*,
@@ -263,7 +262,7 @@ impl RecoveryDb for SqlRecoveryDb {
             .filter(dsl::start_block.ge(start_block_at_least as i64));
 
         // The list of fields here must match the .select() clause above.
-        let mut records = query
+        Ok(query
             .load::<(SqlCompressedRistrettoPublic, i64, i64, bool, Option<i64>)>(&conn)?
             .into_iter()
             .map(
@@ -281,17 +280,7 @@ impl RecoveryDb for SqlRecoveryDb {
                     }
                 },
             )
-            .collect::<Vec<_>>();
-
-        // Sort them as described in get_ingress_key_records trait comments
-        records.sort_unstable_by(|a, b| -> Ordering {
-            a.status
-                .start_block
-                .cmp(&b.status.start_block)
-                .then_with(|| a.key.as_bytes().cmp(b.key.as_bytes()))
-        });
-
-        Ok(records)
+            .collect())
     }
 
     fn new_ingest_invocation(

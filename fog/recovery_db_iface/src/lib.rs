@@ -77,10 +77,6 @@ pub trait RecoveryDb {
 
     /// Get all ingress key records in the database.
     ///
-    /// These records are sorted by:
-    /// - start_block, then,
-    /// - bytes of compressed ristretto public
-    ///
     /// The records will be filtered so that records whose start block is less than the given
     /// number won't be returned.
     fn get_ingress_key_records(
