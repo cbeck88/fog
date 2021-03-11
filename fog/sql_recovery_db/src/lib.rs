@@ -714,7 +714,7 @@ impl RecoveryDb for SqlRecoveryDb {
         self.update_last_active_at_impl(&conn, ingest_invocation_id)
     }
 
-    /// Get any ETxOutRecords produced by a given IngestInvocationId for a given block index.
+    /// Get any ETxOutRecords produced by a given ingress key for a given block index.
     ///
     /// Arguments:
     /// * ingress_key: The ingress key we need ETxOutRecords from
