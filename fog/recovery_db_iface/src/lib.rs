@@ -202,14 +202,14 @@ pub trait RecoveryDb {
     /// Get any ETxOutRecords produced by a given IngestInvocationId for a given block index.
     ///
     /// Arguments:
-    /// * ingest_invocation_id: The ingest invocation we need ETxOutRecords from
+    /// * ingress_key: The ingress_key we need ETxOutRecords from
     /// * block_index: The block we need ETxOutRecords from
     ///
     /// Returns:
     /// * The ETxOutRecord's from when this block was added, or, an error
-    fn get_tx_outs_by_block(
+    fn get_tx_outs_by_block_and_key(
         &self,
-        ingest_invocation_id: &IngestInvocationId,
+        ingress_key: CompressedRistrettoPublic,
         block_index: u64,
     ) -> Result<Vec<ETxOutRecord>, Self::Error>;
 

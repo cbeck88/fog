@@ -1,18 +1,19 @@
 // Copyright (c) 2018-2021 The MobileCoin Foundation
 
-use fog_recovery_db_iface::{IngestInvocationId, IngestableRange};
+use fog_recovery_db_iface::IngressPublicKeyRecord;
 use fog_types::common::BlockRange;
 use mc_common::logger::{log, Logger};
+use mc_crypto_keys::CompressedRistrettoPublic;
 use std::collections::HashMap;
 
 /// A utility object that keeps track of which block number was processed for every known ingest
 /// invocation. This provides utilities such as:
-/// - Finding out what is the next block that needs processing for any of the ingest invocations.
+/// - Finding out what is the next block that needs processing for any of the ingress keys.
 /// - Finding out what is the highest block index we have encountered so far.
-/// - Finding out for which block index have we processed data for all ingest invocations, while
+/// - Finding out for which block index have we processed data for all ingress keys, while
 ///   taking into account missed blocks.
 pub struct BlockTracker {
-    processed_block_per_invocation: HashMap<IngestInvocationId, u64>,
+    processed_block_per_ingress_key: HashMap<CompressedRistrettoPublic, u64>,
     last_highest_processed_block_count: u64,
     logger: Logger,
 }
@@ -20,39 +21,36 @@ pub struct BlockTracker {
 impl BlockTracker {
     pub fn new(logger: Logger) -> Self {
         Self {
-            processed_block_per_invocation: HashMap::default(),
+            processed_block_per_ingress_key: HashMap::default(),
             last_highest_processed_block_count: 0,
             logger,
         }
     }
 
     // Given a list of ingestable ranges and the current state, calculate which block
-    // index needs to be processed next for each ingest invocation.
+    // index needs to be processed next for each ingress key
     pub fn next_blocks(
         &self,
-        ingestable_ranges: &[IngestableRange],
-    ) -> HashMap<IngestInvocationId, u64> {
+        ingress_key_records: &[IngressPublicKeyRecord],
+    ) -> HashMap<CompressedRistrettoPublic, u64> {
         let mut next_blocks = HashMap::default();
 
-        for ingestable_range in ingestable_ranges {
-            if let Some(last_processed_block) = self
-                .processed_block_per_invocation
-                .get(&ingestable_range.id)
-            {
-                // A block has previously been processed for this ingest invocation. See if the
+        for rec in ingress_key_records {
+            if let Some(last_processed_block) = self.processed_block_per_ingress_key.get(&rec.key) {
+                // A block has previously been processed for this ingress key. See if the
                 // next one can be provided by it, and if so add it to the list of next blocks we
                 // would like to process.
                 let next_block = last_processed_block + 1;
-                if ingestable_range.can_provide_block(next_block) {
-                    next_blocks.insert(ingestable_range.id, next_block);
+                if rec.status.covers_block_index(next_block) {
+                    next_blocks.insert(rec.key, next_block);
                 }
             } else {
                 // No block has been processed for this invocation id, so the next block is the
-                // first one, assuming it can actually be provided by the ingest invocation.
+                // first one, assuming it can actually be provided by the ingress key.
                 // (It will not be able to provide the start block if it got decommissioned
                 // immediately after starting before scanning any blocks)
-                if ingestable_range.can_provide_block(ingestable_range.start_block) {
-                    next_blocks.insert(ingestable_range.id, ingestable_range.start_block);
+                if rec.status.covers_block_index(rec.status.start_block) {
+                    next_blocks.insert(rec.key, rec.status.start_block);
                 }
             }
         }
@@ -60,10 +58,11 @@ impl BlockTracker {
         next_blocks
     }
 
-    pub fn block_processed(&mut self, ingest_invocation_id: IngestInvocationId, block_index: u64) {
+    /// Notify the tracker that a block has been processed (loaded into enclave and is now available)
+    pub fn block_processed(&mut self, ingress_key: CompressedRistrettoPublic, block_index: u64) {
         if let Some(previous_block_index) = self
-            .processed_block_per_invocation
-            .insert(ingest_invocation_id, block_index)
+            .processed_block_per_ingress_key
+            .insert(ingress_key, block_index)
         {
             // Sanity check that we are only moving forward and not skipping any blocks.
             assert!(block_index == previous_block_index + 1);
@@ -72,14 +71,33 @@ impl BlockTracker {
 
     /// Given a list of ingestable ranges, missing blocks and current state, calculate the highest
     /// processed block count number. The highest processed block count number is the block count
-    /// for which we know we have loaded all available data.
+    /// for which we know we have loaded all required data, so the users can potentially compute
+    /// their balance up to this block without missing any transactions.
+    ///
+    /// Arguments:
+    /// * highest_known_block_index:
+    ///   The highest block index known to have appeared in the blockchain.
+    ///   If there are no ingress keys at all right now, then this is also the highest
+    ///   fully-processed block. It is assumed in the algorithm that any new keys will
+    ///   appear with start block after this number.
+    /// * ingress_keys:
+    ///   IngressPublicKeyRecord's that exist in the database right now.
+    ///   This indicates their start block, their last-scanned block, their expiry block,
+    ///   and whether they are retired.
+    /// * missing_block_ranges:
+    ///   Any manually entered missing block ranges.
+    ///
     pub fn highest_fully_processed_block_count(
         &mut self,
-        ingestable_ranges: &[IngestableRange],
+        highest_known_block_index: u64,
+        ingress_keys: &[IngressPublicKeyRecord],
         missing_block_ranges: &[BlockRange],
-    ) -> u64 {
+    ) -> (u64, Option<IngressPublicKeyRecord>) {
         let initial_last_highest_processed_block_count = self.last_highest_processed_block_count;
+        let mut reason_we_stopped: Option<IngressPublicKeyRecord> = None;
 
+        // Each pass through the loop attempts to increase self.last_highest_processed_block_count
+        // or break the loop and indicate the reason we can't increase it
         'outer: loop {
             let next_block_index = self.last_highest_processed_block_count;
             let next_block_count = self.last_highest_processed_block_count + 1;
@@ -89,6 +107,15 @@ impl BlockTracker {
                 "checking if highest_processed_block_count can be advanced to {}",
                 next_block_count,
             );
+
+            // This breaks the loop if both ingress_keys and missing_block_ranges are empty.
+            if highest_known_block_index < next_block_index {
+                log::trace!(
+                    self.logger,
+                    "We processed everything up to highest known block index"
+                );
+                break 'outer;
+            }
 
             // If the block has been reported as missing, we can advance since we don't need to do
             // any processing for it.
@@ -103,48 +130,39 @@ impl BlockTracker {
                 continue;
             }
 
-            // Go over all known ingestable ranges and ensure we have processed next_block_index
-            // in all the ranges that are able to provide that block index.
-            let mut block_can_be_provided = false;
-
-            for ingestable_range in ingestable_ranges.iter() {
-                if !ingestable_range.can_provide_block(next_block_index) {
+            // Go over all known ingestable ranges and check if
+            // any of them need to provide this block and have not provided it
+            for rec in ingress_keys {
+                if !rec.status.covers_block_index(next_block_index) {
                     continue;
                 }
 
-                block_can_be_provided = true;
-
-                if let Some(last_processed_block) = self
-                    .processed_block_per_invocation
-                    .get(&ingestable_range.id)
+                if let Some(last_processed_block) =
+                    self.processed_block_per_ingress_key.get(&rec.key)
                 {
                     if next_block_index > *last_processed_block {
-                        // The ingestable range can provide next_block_index but hasn't yet so
-                        // thats is as far as we can go.
-                        log::trace!(self.logger, "cannot advance highest_processed_block_count to {} - ingest invocation {} only processed block {}", next_block_count, ingestable_range.id, last_processed_block);
+                        // This ingress key needs to provide this block, but we haven't got it yet
+                        log::trace!(self.logger, "cannot advance highest_processed_block_count to {}, because ingress_key {:?} only processed block {}", next_block_count, rec.key, last_processed_block);
+                        reason_we_stopped = Some(rec.clone());
                         break 'outer;
                     }
                 } else {
-                    // No blocks have been processed yet by this ingest invocation.
-                    log::trace!(self.logger, "cannot advance highest_processed_block_count to {} - ingest invocation {} hasn't processed anything yet", next_block_count, ingestable_range.id);
+                    // No blocks have been processed yet by this ingress key.
+                    // If next_block_index < start_block then "covers_block_index" is false.
+                    // So if we got here, next_block_index >= start_block, so we are blocked.
+                    log::trace!(self.logger, "cannot advance highest_processed_block_count to {}, because ingress_key {:?} hasn't processed anything yet", next_block_count, rec.key);
+                    reason_we_stopped = Some(rec.clone());
                     break 'outer;
                 }
             }
 
-            if !block_can_be_provided {
-                if !ingestable_ranges.is_empty() {
-                    // next_block_index is neither missing nor can it be provided by any ingest invocation.
-                    // This is fishy so stop here.
-                    log::warn!(self.logger, "block index {} is not reported missing but cannot be fulfiled by any of the ingest invocation ranges {:?}", next_block_index, ingestable_ranges);
-                }
-
-                break;
-            }
-
-            // If we got here it means:
-            // 1) next_block_index is not reported as missing.
-            // 2) At least one ingestable range could provide the block.
-            // 3) All ingestable ranges that could process the block have processed it.
+            // If we got here it means there was no reason we cannot advance the highest processed block count
+            // 1) next_block_index did not exceed highest_known_block_index
+            // 2) next_block_index was not both covered, and not yet provided for, for any ingress public key
+            //
+            // If next_block_index is missing, we already did
+            // self.last_highest_processed_block_count = next_block_count;
+            // and re-entered the loop early.
             self.last_highest_processed_block_count = next_block_count;
         }
 
@@ -157,14 +175,14 @@ impl BlockTracker {
             );
         }
 
-        self.last_highest_processed_block_count
+        (self.last_highest_processed_block_count, reason_we_stopped)
     }
 
     /// Get the highest block count we have encountered.
     pub fn highest_known_block_count(&self) -> u64 {
-        self.processed_block_per_invocation
+        self.processed_block_per_ingress_key
             .iter()
-            .map(|(_ingest_invocation_id, block_index)| *block_index + 1)
+            .map(|(_key, block_index)| *block_index + 1)
             .max()
             .unwrap_or(0)
     }

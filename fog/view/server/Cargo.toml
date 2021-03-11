@@ -29,6 +29,7 @@ mc-attest-api = { path = "../../../mobilecoin/attest/api" }
 mc-attest-core = { path = "../../../mobilecoin/attest/core" }
 mc-attest-net = { path = "../../../mobilecoin/attest/net" }
 mc-common = { path = "../../../mobilecoin/common", features = ["log"] }
+mc-crypto-keys = { path = "../../../mobilecoin/crypto/keys" }
 mc-sgx-report-cache-untrusted = { path = "../../../mobilecoin/sgx/report-cache/untrusted" }
 mc-util-from-random = { path = "../../../mobilecoin/util/from-random" }
 mc-util-grpc = { path = "../../../mobilecoin/util/grpc" }

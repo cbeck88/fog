@@ -717,20 +717,21 @@ impl RecoveryDb for SqlRecoveryDb {
     /// Get any ETxOutRecords produced by a given IngestInvocationId for a given block index.
     ///
     /// Arguments:
-    /// * ingest_invocation_id: The ingest invocation we need ETxOutRecords from
+    /// * ingress_key: The ingress key we need ETxOutRecords from
     /// * block_index: The block we need ETxOutRecords from
     ///
     /// Returns:
     /// * The ETxOutRecord's from when this block was added, or, an error
-    fn get_tx_outs_by_block(
+    fn get_tx_outs_by_block_and_key(
         &self,
-        ingest_invocation_id: &IngestInvocationId,
+        ingress_key: CompressedRistrettoPublic,
         block_index: u64,
     ) -> Result<Vec<ETxOutRecord>, Self::Error> {
         let conn = self.pool.get()?;
 
+        let key_bytes: &[u8] = ingress_key.as_ref();
         let query = schema::ingested_blocks::dsl::ingested_blocks
-            .filter(schema::ingested_blocks::dsl::ingest_invocation_id.eq(**ingest_invocation_id))
+            .filter(schema::ingested_blocks::dsl::ingress_public_key.eq(key_bytes))
             .filter(schema::ingested_blocks::dsl::block_number.eq(block_index as i64))
             .select(schema::ingested_blocks::dsl::proto_ingested_block_data);
 

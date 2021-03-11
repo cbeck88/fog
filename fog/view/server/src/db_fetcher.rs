@@ -3,9 +3,10 @@
 //! An object for managing background data fetches from the recovery database.
 
 use crate::{block_tracker::BlockTracker, counters};
-use fog_recovery_db_iface::{IngestInvocationId, IngestableRange, RecoveryDb};
+use fog_recovery_db_iface::{IngressPublicKeyRecord, RecoveryDb};
 use fog_types::{common::BlockRange, ETxOutRecord};
 use mc_common::logger::{log, Logger};
+use mc_crypto_keys::CompressedRistrettoPublic;
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -29,8 +30,8 @@ pub const MAX_QUEUED_RECORDS: usize = (128 * 1024 * 1024) / 256;
 /// A single block of fetched ETxOutRecords, together with information identifying where it came
 /// from.
 pub struct FetchedRecords {
-    /// The Ingest Invocation ID that produced these ETxOutRecords
-    pub ingest_invocation_id: IngestInvocationId,
+    /// The ingress key associated to these ETxOutRecords
+    pub ingress_key: CompressedRistrettoPublic,
 
     /// The block index the ETxOutRecords belong to.
     pub block_index: u64,
@@ -43,8 +44,11 @@ pub struct FetchedRecords {
 /// object.
 #[derive(Default)]
 struct DbFetcherSharedState {
-    /// Information about ingestable ranges we are aware of.
-    ingestable_ranges: Vec<IngestableRange>,
+    /// The highest known block index in the recovery db
+    highest_known_block_index: u64,
+
+    /// Information about ingress public keys we are aware of.
+    ingress_keys: Vec<IngressPublicKeyRecord>,
 
     /// Missing block ranges we are aware of.
     missing_block_ranges: Vec<BlockRange>,
@@ -118,16 +122,16 @@ impl DbFetcher {
         Ok(())
     }
 
-    /// Get a copy of the currently known ingestable ranges.
-    /// This updates over time by the background worker thread.
-    pub fn known_ingestable_ranges(&self) -> Vec<IngestableRange> {
-        self.shared_state().ingestable_ranges.clone()
-    }
-
-    /// Get a copy of the currently known missing block ranges.
-    /// This updates over time by the background worker thread.
-    pub fn known_missing_block_ranges(&self) -> Vec<BlockRange> {
-        self.shared_state().missing_block_ranges.clone()
+    /// Get context for the enclave block tracker to compute the highest processed block count
+    pub fn get_highest_processed_block_context(
+        &self,
+    ) -> (u64, Vec<IngressPublicKeyRecord>, Vec<BlockRange>) {
+        let state = self.shared_state();
+        (
+            state.highest_known_block_index,
+            state.ingress_keys.clone(),
+            state.missing_block_ranges.clone(),
+        )
     }
 
     /// Get the list of FetchedRecords that were obtained by the worker thread. This also clears
@@ -200,7 +204,7 @@ impl<DB: RecoveryDb + Clone + Send + Sync + 'static> DbFetcherThread<DB> {
                 break;
             }
 
-            self.load_ingestable_ranges();
+            self.load_ingress_keys();
 
             self.load_missing_block_ranges();
 
@@ -214,25 +218,21 @@ impl<DB: RecoveryDb + Clone + Send + Sync + 'static> DbFetcherThread<DB> {
         }
     }
 
-    /// Sync ingestable ranges from the database. This allows us to learn which ingest invocations
+    /// Sync ingress key records from the database. This allows us to learn which ingress keys
     /// are currently alive, which block ranges they are able to cover, and which blocks have they
     /// ingested so far.
-    fn load_ingestable_ranges(&self) {
+    fn load_ingress_keys(&self) {
         let _metrics_timer = counters::LOAD_INGESTABLE_RANGES_TIME.start_timer();
 
-        match self.db.get_ingestable_ranges() {
-            Ok(ingestable_ranges) => {
-                log::trace!(
-                    self.logger,
-                    "get_ingestable_ranges: {:?}",
-                    ingestable_ranges
-                );
+        match self.db.get_ingress_key_records(0) {
+            Ok(records) => {
+                log::trace!(self.logger, "get_ingress_key_records: {:?}", records);
 
-                self.shared_state().ingestable_ranges = ingestable_ranges;
+                self.shared_state().ingress_keys = records;
             }
 
             Err(err) => {
-                log::warn!(self.logger, "Failed getting ingestable ranges: {:?}", err);
+                log::warn!(self.logger, "Failed getting ingress keys: {}", err);
             }
         }
     }
@@ -268,110 +268,73 @@ impl<DB: RecoveryDb + Clone + Send + Sync + 'static> DbFetcherThread<DB> {
         let mut has_more_work = false;
 
         // See whats the next block number we need to load for each invocation we are aware of.
-        let (ingestable_ranges, missing_block_ranges) = {
-            let shared_state = self.shared_state();
-            (
-                shared_state.ingestable_ranges.clone(),
-                shared_state.missing_block_ranges.clone(),
-            )
-        };
+        let ingress_keys = self.shared_state().ingress_keys.clone();
 
-        let next_block_index_per_invocation_id = self.block_tracker.next_blocks(&ingestable_ranges);
+        let next_block_index_per_ingress_key = self.block_tracker.next_blocks(&ingress_keys);
 
         log::trace!(
             self.logger,
             "load_block_data next_blocks: {:?}",
-            next_block_index_per_invocation_id
+            next_block_index_per_ingress_key
         );
 
-        for (ingest_invocation_id, block_index) in next_block_index_per_invocation_id.into_iter() {
-            // Do not attempt to fetch blocks explicitly marked as missing.
-            if BlockTracker::is_missing_block(&missing_block_ranges, block_index) {
-                self.block_tracker
-                    .block_processed(ingest_invocation_id, block_index);
-
-                // This ensures we do not have holes in the blocks processed by the enclave thread.
-                self.shared_state().fetched_records.push(FetchedRecords {
-                    ingest_invocation_id,
-                    block_index,
-                    records: vec![],
-                });
-
-                continue;
-            }
-
+        for (ingress_key, block_index) in next_block_index_per_ingress_key.into_iter() {
             // Attempt to load data for the next block.
             let get_tx_outs_by_block_result = {
                 let _metrics_timer = counters::GET_TX_OUTS_BY_BLOCK_TIME.start_timer();
                 self.db
-                    .get_tx_outs_by_block(&ingest_invocation_id, block_index)
+                    .get_tx_outs_by_block_and_key(ingress_key, block_index)
             };
 
             match get_tx_outs_by_block_result {
                 Ok(tx_outs) => {
                     let num_tx_outs = tx_outs.len();
 
-                    // NOTE: This makes a very nuanced and important assumption, which is that
-                    // ingest always produces data ETxOutRecords for each block it has processed,
-                    // EVEN if it actually found NO matches.
-                    // Based on that assumption, tx_outs will be empty only when ingest has not yet
-                    // ingested the block (and wrote the results into the database).
-                    if !tx_outs.is_empty() {
-                        // Log
-                        log::info!(
-                            self.logger,
-                            "invocation id {} fetched {} tx outs for block {}",
-                            ingest_invocation_id,
-                            num_tx_outs,
-                            block_index,
-                        );
+                    // Log
+                    log::info!(
+                        self.logger,
+                        "ingress_key {:?} fetched {} tx outs for block {}",
+                        ingress_key,
+                        num_tx_outs,
+                        block_index,
+                    );
 
-                        // Ingest has produced data for this block, we'd like to keep trying the
-                        // next block on the next loop iteration.
-                        has_more_work = true;
+                    // Ingest has produced data for this block, we'd like to keep trying the
+                    // next block on the next loop iteration.
+                    has_more_work = true;
 
-                        // Mark that we are done fetching data for this block.
-                        self.block_tracker
-                            .block_processed(ingest_invocation_id, block_index);
+                    // Mark that we are done fetching data for this block.
+                    self.block_tracker.block_processed(ingress_key, block_index);
 
-                        // Store the fetched records so that they could be consumed by the enclave
-                        // when its ready.
-                        self.shared_state().fetched_records.push(FetchedRecords {
-                            ingest_invocation_id,
-                            block_index,
-                            records: tx_outs,
-                        });
+                    // Store the fetched records so that they could be consumed by the enclave
+                    // when its ready.
+                    self.shared_state().fetched_records.push(FetchedRecords {
+                        ingress_key,
+                        block_index,
+                        records: tx_outs,
+                    });
 
-                        // Update metrics.
-                        counters::BLOCKS_FETCHED_COUNT.inc();
-                        counters::TXOS_FETCHED_COUNT.inc_by(num_tx_outs as i64);
+                    // Update metrics.
+                    counters::BLOCKS_FETCHED_COUNT.inc();
+                    counters::TXOS_FETCHED_COUNT.inc_by(num_tx_outs as i64);
 
-                        // Block if we have queued up enough records for now.
-                        // (Until the enclave thread drains the queue).
-                        let (lock, condvar) = &*self.num_queued_records_limiter;
-                        let mut num_queued_records = condvar
-                            .wait_while(lock.lock().unwrap(), |num_queued_records| {
-                                *num_queued_records > MAX_QUEUED_RECORDS
-                            })
-                            .expect("condvar wait failed");
-                        *num_queued_records += num_tx_outs;
+                    // Block if we have queued up enough records for now.
+                    // (Until the enclave thread drains the queue).
+                    let (lock, condvar) = &*self.num_queued_records_limiter;
+                    let mut num_queued_records = condvar
+                        .wait_while(lock.lock().unwrap(), |num_queued_records| {
+                            *num_queued_records > MAX_QUEUED_RECORDS
+                        })
+                        .expect("condvar wait failed");
+                    *num_queued_records += num_tx_outs;
 
-                        counters::DB_FETCHER_NUM_QUEUED_RECORDS.set(*num_queued_records as i64);
-                    } else {
-                        log::trace!(
-                            self.logger,
-                            "invocation id {} fetched {} tx outs for block {}",
-                            ingest_invocation_id,
-                            num_tx_outs,
-                            block_index,
-                        );
-                    }
+                    counters::DB_FETCHER_NUM_QUEUED_RECORDS.set(*num_queued_records as i64);
                 }
                 Err(err) => {
                     log::warn!(
                         self.logger,
-                        "Failed querying tx outs for {}/{}: {}",
-                        ingest_invocation_id,
+                        "Failed querying tx outs for {:?}/{}: {}",
+                        ingress_key,
                         block_index,
                         err
                     );

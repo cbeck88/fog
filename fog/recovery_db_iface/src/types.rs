@@ -22,6 +22,19 @@ pub struct IngressPublicKeyStatus {
     pub retired: bool,
 }
 
+impl IngressPublicKeyStatus {
+    /// Whether a block index lies between start_block and pubkey_expiry for this key.
+    /// If the key is not retired yet, we assume that pubkey_expiry may be increasing,
+    /// so we only check if self.start_block <= block_index in that case.
+    ///
+    /// If it does, then the block index potentially contains TxOut's which had
+    /// fog hints encrypted using this ingress public key, and fog needs to scan
+    /// this block with this ingress key, or declare it a missed block.
+    pub fn covers_block_index(&self, block_index: u64) -> bool {
+        self.start_block <= block_index && (!self.retired || block_index < self.pubkey_expiry)
+    }
+}
+
 /// Information returned after attempting to add block data to the database.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AddBlockDataStatus {
@@ -46,6 +59,26 @@ pub struct IngressPublicKeyRecord {
     /// This is inherently racy since other partcipants may be writing concurrently with us, but this
     /// number is a lower bound.
     pub last_scanned_block: Option<u64>,
+}
+
+impl IngressPublicKeyRecord {
+    /// The next block index that needs to be scanned with this key.
+    ///
+    /// This is one of:
+    /// - last_scanned_block + 1
+    /// - start_block if last_scanned_block is None
+    /// - None, we're not actually on the hook for that block, per self.covers_block_index
+    pub fn next_needed_block_index(&self) -> Option<u64> {
+        let candidate = self
+            .last_scanned_block
+            .map(|x| x + 1)
+            .unwrap_or(self.status.start_block);
+        if self.status.covers_block_index(candidate) {
+            Some(candidate)
+        } else {
+            None
+        }
+    }
 }
 
 /// Possible user events to be returned to end users.
