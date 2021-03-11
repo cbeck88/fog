@@ -365,6 +365,22 @@ impl<DB: RecoveryDb + Clone + Send + Sync + 'static> DbFetcherThread<DB> {
             }
         }
 
+        // Even if that for loop was empty, we should maybe update highest known block index
+        if let Ok(Some(block_index)) = self.db.get_highest_known_block_index() {
+            let mut state = self.shared_state();
+            let new_highest_known_block_index =
+                core::cmp::max(state.highest_known_block_index, block_index);
+            if new_highest_known_block_index != state.highest_known_block_index {
+                log::info!(
+                    self.logger,
+                    "highest known block index has increased from {} to {}",
+                    state.highest_known_block_index,
+                    new_highest_known_block_index
+                );
+                state.highest_known_block_index = new_highest_known_block_index;
+            }
+        }
+
         has_more_work
     }
 
