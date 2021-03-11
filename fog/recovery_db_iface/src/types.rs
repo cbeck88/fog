@@ -9,7 +9,7 @@ use mc_crypto_keys::CompressedRistrettoPublic;
 use serde::{Deserialize, Serialize};
 
 /// Status in the database connected to this ingress public key
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct IngressPublicKeyStatus {
     /// The first block that fog promises to scan with this key after publishing it.
     /// This should be the latest block that existed before we published it (or, a block close to but before that)
@@ -49,7 +49,7 @@ pub struct AddBlockDataStatus {
 ///
 /// This is returned by get_ingress_public_key_records, and augments the PublicKeyStatus so that
 /// the last_block_scanned is also returned, as well as the public key bytes themselves.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct IngressPublicKeyRecord {
     /// The ingress public key this data refers to
     pub key: CompressedRistrettoPublic,

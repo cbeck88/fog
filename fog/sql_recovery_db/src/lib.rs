@@ -258,9 +258,9 @@ impl RecoveryDb for SqlRecoveryDb {
             .map(
                 |ingress_key_data| -> Result<IngressPublicKeyRecord, Error> {
                     let status = IngressPublicKeyStatus {
-                        start_block: key_records[0].start_block as u64,
-                        pubkey_expiry: key_records[0].pubkey_expiry as u64,
-                        retired: key_records[0].retired,
+                        start_block: ingress_key_data.start_block as u64,
+                        pubkey_expiry: ingress_key_data.pubkey_expiry as u64,
+                        retired: ingress_key_data.retired,
                     };
 
                     // Look in ingested_blocks table for last scanned block
@@ -948,6 +948,7 @@ mod tests {
     use mc_crypto_keys::RistrettoPublic;
     use mc_util_from_random::FromRandom;
     use rand::{rngs::StdRng, SeedableRng};
+    use std::{collections::HashSet, iter::FromIterator};
 
     #[test_with_logger]
     fn test_new_ingest_invocation(logger: Logger) {
@@ -1729,7 +1730,7 @@ mod tests {
     }
 
     #[test_with_logger]
-    fn test_get_tx_outs_by_block(logger: Logger) {
+    fn test_get_tx_outs_by_block_and_key(logger: Logger) {
         let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
         let db_test_context = test_utils::SqlRecoveryDbTestContext::new(logger);
         let db = db_test_context.get_db_instance();
@@ -1940,6 +1941,244 @@ mod tests {
         assert_eq!(
             key_status.pubkey_expiry, 10203060,
             "pubkey expiry should have increased again after unretiring the key"
+        );
+    }
+
+    #[test_with_logger]
+    fn test_get_ingress_key_records(logger: Logger) {
+        let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
+        let db_test_context = test_utils::SqlRecoveryDbTestContext::new(logger);
+        let db = db_test_context.get_db_instance();
+
+        // At first, there are no records.
+        assert_eq!(db.get_ingress_key_records(0).unwrap(), vec![],);
+
+        // Add an ingress key and see that we can retreive it.
+        let ingress_key1 = CompressedRistrettoPublic::from_random(&mut rng);
+        db.new_ingress_key(&ingress_key1, 123).unwrap();
+
+        assert_eq!(
+            db.get_ingress_key_records(0).unwrap(),
+            vec![IngressPublicKeyRecord {
+                key: ingress_key1.clone(),
+                status: IngressPublicKeyStatus {
+                    start_block: 123,
+                    pubkey_expiry: 0,
+                    retired: false,
+                },
+                last_scanned_block: None,
+            }],
+        );
+
+        // Add another ingress key and check that we can find it as well.
+        let ingress_key2 = CompressedRistrettoPublic::from_random(&mut rng);
+        db.new_ingress_key(&ingress_key2, 456).unwrap();
+
+        assert_eq!(
+            HashSet::<IngressPublicKeyRecord>::from_iter(db.get_ingress_key_records(0).unwrap()),
+            HashSet::from_iter(vec![
+                IngressPublicKeyRecord {
+                    key: ingress_key1.clone(),
+                    status: IngressPublicKeyStatus {
+                        start_block: 123,
+                        pubkey_expiry: 0,
+                        retired: false,
+                    },
+                    last_scanned_block: None,
+                },
+                IngressPublicKeyRecord {
+                    key: ingress_key2.clone(),
+                    status: IngressPublicKeyStatus {
+                        start_block: 456,
+                        pubkey_expiry: 0,
+                        retired: false,
+                    },
+                    last_scanned_block: None,
+                }
+            ])
+        );
+
+        // Publish a few blocks and check that last_scanned_block gets updated as expected.
+        let invoc_id1 = db
+            .new_ingest_invocation(None, &ingress_key1, &random_kex_rng_pubkey(&mut rng), 123)
+            .unwrap();
+
+        for block_id in 123..=130 {
+            let (block, records) = fog_test_infra::db_tests::random_block(&mut rng, block_id, 10);
+            db.add_block_data(&invoc_id1, &block, 0, &records).unwrap();
+
+            assert_eq!(
+                HashSet::<IngressPublicKeyRecord>::from_iter(
+                    db.get_ingress_key_records(0).unwrap()
+                ),
+                HashSet::from_iter(vec![
+                    IngressPublicKeyRecord {
+                        key: ingress_key1.clone(),
+                        status: IngressPublicKeyStatus {
+                            start_block: 123,
+                            pubkey_expiry: 0,
+                            retired: false,
+                        },
+                        last_scanned_block: Some(block_id),
+                    },
+                    IngressPublicKeyRecord {
+                        key: ingress_key2.clone(),
+                        status: IngressPublicKeyStatus {
+                            start_block: 456,
+                            pubkey_expiry: 0,
+                            retired: false,
+                        },
+                        last_scanned_block: None,
+                    }
+                ])
+            );
+        }
+
+        // Publishing an old block should not afftect last_scanned_block.
+        let (block, records) = fog_test_infra::db_tests::random_block(&mut rng, 50, 10);
+        db.add_block_data(&invoc_id1, &block, 0, &records).unwrap();
+
+        assert_eq!(
+            HashSet::<IngressPublicKeyRecord>::from_iter(db.get_ingress_key_records(0).unwrap()),
+            HashSet::from_iter(vec![
+                IngressPublicKeyRecord {
+                    key: ingress_key1.clone(),
+                    status: IngressPublicKeyStatus {
+                        start_block: 123,
+                        pubkey_expiry: 0,
+                        retired: false,
+                    },
+                    last_scanned_block: Some(130),
+                },
+                IngressPublicKeyRecord {
+                    key: ingress_key2.clone(),
+                    status: IngressPublicKeyStatus {
+                        start_block: 456,
+                        pubkey_expiry: 0,
+                        retired: false,
+                    },
+                    last_scanned_block: None,
+                }
+            ])
+        );
+
+        // Check that retiring behaves as expected.
+        db.retire_ingress_key(&ingress_key1, true).unwrap();
+
+        assert_eq!(
+            HashSet::<IngressPublicKeyRecord>::from_iter(db.get_ingress_key_records(0).unwrap()),
+            HashSet::from_iter(vec![
+                IngressPublicKeyRecord {
+                    key: ingress_key1.clone(),
+                    status: IngressPublicKeyStatus {
+                        start_block: 123,
+                        pubkey_expiry: 0,
+                        retired: true,
+                    },
+                    last_scanned_block: Some(130),
+                },
+                IngressPublicKeyRecord {
+                    key: ingress_key2.clone(),
+                    status: IngressPublicKeyStatus {
+                        start_block: 456,
+                        pubkey_expiry: 0,
+                        retired: false,
+                    },
+                    last_scanned_block: None,
+                }
+            ])
+        );
+
+        // Check that pubkey expiry behaves as expected
+        db.set_report(
+            &ingress_key2,
+            "",
+            &ReportData {
+                ingest_invocation_id: None,
+                report: create_report(""),
+                pubkey_expiry: 888,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            HashSet::<IngressPublicKeyRecord>::from_iter(db.get_ingress_key_records(0).unwrap()),
+            HashSet::from_iter(vec![
+                IngressPublicKeyRecord {
+                    key: ingress_key1.clone(),
+                    status: IngressPublicKeyStatus {
+                        start_block: 123,
+                        pubkey_expiry: 0,
+                        retired: true,
+                    },
+                    last_scanned_block: Some(130),
+                },
+                IngressPublicKeyRecord {
+                    key: ingress_key2.clone(),
+                    status: IngressPublicKeyStatus {
+                        start_block: 456,
+                        pubkey_expiry: 888,
+                        retired: false,
+                    },
+                    last_scanned_block: None,
+                }
+            ])
+        );
+
+        // Which invocation id published the block shouldn't matter, last_scanned_block should
+        // continue to move forward.
+        for block_id in 456..=460 {
+            let invoc_id = db
+                .new_ingest_invocation(
+                    None,
+                    &ingress_key2,
+                    &random_kex_rng_pubkey(&mut rng),
+                    block_id,
+                )
+                .unwrap();
+
+            let (block, records) = fog_test_infra::db_tests::random_block(&mut rng, block_id, 10);
+            db.add_block_data(&invoc_id, &block, 0, &records).unwrap();
+
+            assert_eq!(
+                HashSet::<IngressPublicKeyRecord>::from_iter(
+                    db.get_ingress_key_records(0).unwrap()
+                ),
+                HashSet::from_iter(vec![
+                    IngressPublicKeyRecord {
+                        key: ingress_key1.clone(),
+                        status: IngressPublicKeyStatus {
+                            start_block: 123,
+                            pubkey_expiry: 0,
+                            retired: true,
+                        },
+                        last_scanned_block: Some(130),
+                    },
+                    IngressPublicKeyRecord {
+                        key: ingress_key2.clone(),
+                        status: IngressPublicKeyStatus {
+                            start_block: 456,
+                            pubkey_expiry: 888,
+                            retired: false,
+                        },
+                        last_scanned_block: Some(block_id),
+                    }
+                ])
+            );
+        }
+
+        // start_block_at_least filtering works as expected.
+        assert_eq!(
+            db.get_ingress_key_records(400).unwrap(),
+            vec![IngressPublicKeyRecord {
+                key: ingress_key2.clone(),
+                status: IngressPublicKeyStatus {
+                    start_block: 456,
+                    pubkey_expiry: 888,
+                    retired: false,
+                },
+                last_scanned_block: Some(460),
+            }]
         );
     }
 }
