@@ -5,7 +5,48 @@
 
 use core::{fmt, ops::Deref};
 use mc_attest_core::VerificationReport;
+use mc_crypto_keys::CompressedRistrettoPublic;
 use serde::{Deserialize, Serialize};
+
+/// Status in the database connected to this ingress public key
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct IngressPublicKeyStatus {
+    /// The first block that fog promises to scan with this key after publishing it.
+    /// This should be the latest block that existed before we published it (or, a block close to but before that)
+    pub start_block: u64,
+    /// The largest pubkey expiry value that we have ever published for this key.
+    /// If less than start_block, it means we have never published this key.
+    pub pubkey_expiry: u64,
+    /// Whether this key is retiring / retired.
+    /// When a key is retired, we stop publishing reports about it.
+    pub retired: bool,
+}
+
+/// Information returned after attempting to add block data to the database.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AddBlockDataStatus {
+    /// Indicates that the block we tried to add has already been scanned using this ingress key,
+    /// and didn't need to be scanned again.
+    ///
+    /// If this value is true, then no data was added to the database.
+    pub block_already_scanned_with_this_key: bool,
+}
+
+/// IngressPublicKeyRecord
+///
+/// This is returned by get_ingress_public_key_records, and augments the PublicKeyStatus so that
+/// the last_block_scanned is also returned, as well as the public key bytes themselves.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct IngressPublicKeyRecord {
+    /// The ingress public key this data refers to
+    pub key: CompressedRistrettoPublic,
+    /// The status of the key
+    pub status: IngressPublicKeyStatus,
+    /// The last block scanned by this key.
+    /// This is inherently racy since other partcipants may be writing concurrently with us, but this
+    /// number is a lower bound.
+    pub last_scanned_block: Option<u64>,
+}
 
 /// Possible user events to be returned to end users.
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]

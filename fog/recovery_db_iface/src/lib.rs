@@ -17,35 +17,14 @@ use mc_crypto_keys::CompressedRistrettoPublic;
 
 pub use fog_types::{common::BlockRange, ETxOutRecord};
 pub use mc_transaction_core::Block;
-pub use types::{FogUserEvent, IngestInvocationId, IngestableRange, ReportData};
+pub use types::{
+    AddBlockDataStatus, FogUserEvent, IngestInvocationId, IngestableRange, IngressPublicKeyRecord,
+    IngressPublicKeyStatus, ReportData,
+};
 
 /// A generic error type for recovery db operations
 pub trait RecoveryDbError: Debug + Display + Send + Sync {}
 impl<T> RecoveryDbError for T where T: Debug + Display + Send + Sync {}
-
-/// Status in the database connected to this ingress public key
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct IngressPublicKeyStatus {
-    /// The first block that fog promises to scan with this key after publishing it.
-    /// This should be the latest block that existed before we published it (or, a block close to but before that)
-    pub start_block: u64,
-    /// The largest pubkey expiry value that we have ever published for this key.
-    /// If less than start_block, it means we have never published this key.
-    pub pubkey_expiry: u64,
-    /// Whether this key is retiring / retired.
-    /// When a key is retired, we stop publishing reports about it.
-    pub retired: bool,
-}
-
-/// Information returned after attempting to add block data to the database.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct AddBlockDataStatus {
-    /// Indicates that the block we tried to add has already been scanned using this ingress key,
-    /// and didn't need to be scanned again.
-    ///
-    /// If this value is true, then no data was added to the database.
-    pub block_already_scanned_with_this_key: bool,
-}
 
 /// The recovery database interface.
 pub trait RecoveryDb {
@@ -95,6 +74,19 @@ pub trait RecoveryDb {
         &self,
         key: &CompressedRistrettoPublic,
     ) -> Result<Option<u64>, Self::Error>;
+
+    /// Get all ingress key records in the database.
+    ///
+    /// These records are sorted by:
+    /// - start_block, then,
+    /// - bytes of compressed ristretto public
+    ///
+    /// The records will be filtered so that records whose start block is less than the given
+    /// number won't be returned.
+    fn get_ingress_key_records(
+        &self,
+        start_block_at_least: u64,
+    ) -> Result<Vec<IngressPublicKeyRecord>, Self::Error>;
 
     /// Adds a new ingest invocation to the database, optionally decommissioning an older one.
     ///
