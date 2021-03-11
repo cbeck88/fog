@@ -69,7 +69,7 @@ impl BlockTracker {
         }
     }
 
-    /// Given a list of ingestable ranges, missing blocks and current state, calculate the highest
+    /// Given a list of ingress keys, missing blocks and current state, calculate the highest
     /// processed block count number. The highest processed block count number is the block count
     /// for which we know we have loaded all required data, so the users can potentially compute
     /// their balance up to this block without missing any transactions.
