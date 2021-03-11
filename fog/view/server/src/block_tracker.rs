@@ -87,6 +87,10 @@ impl BlockTracker {
     /// * missing_block_ranges:
     ///   Any manually entered missing block ranges.
     ///
+    /// Returns:
+    /// * The highest fully processed block count, which may be 0 if nothing is processed
+    /// * Optionally, an IngressPublicKeyRecord which is the *reason* that the previous number
+    ///   is less than highest_known_block_index -- the next thing we are waiting on for data.
     pub fn highest_fully_processed_block_count(
         &mut self,
         highest_known_block_index: u64,
@@ -204,6 +208,7 @@ impl BlockTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fog_recovery_db_iface::IngressPublicKeyStatus;
     use mc_common::logger::test_with_logger;
     use std::{cmp::min, iter::FromIterator};
 
@@ -217,46 +222,33 @@ mod tests {
     #[test_with_logger]
     fn next_blocks_single_range_commissioned_hasnt_scanned(logger: Logger) {
         let mut block_tracker = BlockTracker::new(logger);
-        let ingestable_range = IngestableRange {
-            id: IngestInvocationId::from(1),
-            start_block: 123,
-            decommissioned: false,
-            last_ingested_block: None,
+        let rec = IngressPublicKeyRecord {
+            key: CompressedRistrettoPublic::from(1),
+            status: IngressPublicKeyStatus {
+                start_block: 123,
+                pubkey_expiry: 173,
+                expired: false,
+            },
+            last_scanned_block: None,
         };
 
-        let expected_state =
-            HashMap::from_iter(vec![(ingestable_range.id, ingestable_range.start_block)]);
+        let expected_state = HashMap::from_iter(vec![(rec.key, rec.start_block)]);
 
-        assert_eq!(
-            block_tracker.next_blocks(&[ingestable_range.clone()]),
-            expected_state
-        );
+        assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
 
         // Repeated call should result in the same expected result.
-        assert_eq!(
-            block_tracker.next_blocks(&[ingestable_range.clone()]),
-            expected_state
-        );
+        assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
 
         // Advancing to the next block should advance the expected result.
         for i in 0..10 {
-            block_tracker.block_processed(ingestable_range.id, ingestable_range.start_block + i);
+            block_tracker.block_processed(rec.key, rec.start_block + i);
 
-            let expected_state = HashMap::from_iter(vec![(
-                ingestable_range.id,
-                ingestable_range.start_block + i + 1,
-            )]);
+            let expected_state = HashMap::from_iter(vec![(rec.key, rec.start_block + i + 1)]);
 
-            assert_eq!(
-                block_tracker.next_blocks(&[ingestable_range.clone()]),
-                expected_state
-            );
+            assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
 
             // Repeated call should result in the same expected result.
-            assert_eq!(
-                block_tracker.next_blocks(&[ingestable_range.clone()]),
-                expected_state
-            );
+            assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
         }
     }
 

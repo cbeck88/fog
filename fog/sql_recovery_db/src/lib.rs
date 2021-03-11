@@ -1301,7 +1301,10 @@ mod tests {
             block1.cumulative_txo_count
         );
 
-        let e_tx_out_records = db.get_tx_outs_by_block(&invoc_id1, block1.index).unwrap();
+        let e_tx_out_records = db
+            .get_tx_outs_by_block_and_key(ingress_key, block1.index)
+            .unwrap()
+            .unwrap();
         assert_eq!(e_tx_out_records.len(), 10);
         assert_eq!(e_tx_out_records.len(), records1.len());
         for (expected_record, written_record) in records1.iter().zip(e_tx_out_records.iter()) {
@@ -1386,8 +1389,14 @@ mod tests {
             block2.cumulative_txo_count
         );
 
-        let mut e_tx_out_records = db.get_tx_outs_by_block(&invoc_id1, block1.index).unwrap();
-        let mut e_tx_out_records_b1 = db.get_tx_outs_by_block(&invoc_id2, block2.index).unwrap();
+        let mut e_tx_out_records = db
+            .get_tx_outs_by_block_and_key(ingress_key, block1.index)
+            .unwrap()
+            .unwrap();
+        let mut e_tx_out_records_b1 = db
+            .get_tx_outs_by_block_and_key(ingress_key, block2.index)
+            .unwrap()
+            .unwrap();
         e_tx_out_records.append(&mut e_tx_out_records_b1);
         assert_eq!(e_tx_out_records.len(), 25);
         assert_eq!(e_tx_out_records.len(), records1.len() + records2.len());
@@ -1744,22 +1753,28 @@ mod tests {
         db.add_block_data(&invoc_id2, &block2, 0, &records2)
             .unwrap();
 
-        // Get tx outs for an invocation id we're not aware of or a block id we're not aware of
-        // should return an empty array.
-        let tx_outs = db.get_tx_outs_by_block(&invoc_id1, 124).unwrap();
-        assert_eq!(tx_outs, vec![]);
+        // Get tx outs for a key we're not aware of or a block id we're not aware of
+        // should return None
+        let tx_outs = db.get_tx_outs_by_block_and_key(ingress_key, 124).unwrap();
+        assert_eq!(tx_outs, None);
 
         let tx_outs = db
-            .get_tx_outs_by_block(&IngestInvocationId::from(666), 123)
+            .get_tx_outs_by_block_and_key(CompressedRistrettoPublic::from_random(&mut rng), 123)
             .unwrap();
-        assert_eq!(tx_outs, vec![]);
+        assert_eq!(tx_outs, None);
 
-        // Getting tx outs for invocation id and block number that were previously written should
+        // Getting tx outs for ingress key and block number that were previously written should
         // work as expected.
-        let tx_outs = db.get_tx_outs_by_block(&invoc_id1, block1.index).unwrap();
+        let tx_outs = db
+            .get_tx_outs_by_block_and_key(ingress_key, block1.index)
+            .unwrap()
+            .unwrap();
         assert_eq!(tx_outs, records1);
 
-        let tx_outs = db.get_tx_outs_by_block(&invoc_id2, block2.index).unwrap();
+        let tx_outs = db
+            .get_tx_outs_by_block_and_key(ingress_key, block2.index)
+            .unwrap()
+            .unwrap();
         assert_eq!(tx_outs, records2);
     }
 
