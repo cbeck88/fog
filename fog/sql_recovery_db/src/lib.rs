@@ -721,12 +721,12 @@ impl RecoveryDb for SqlRecoveryDb {
     /// * block_index: The block we need ETxOutRecords from
     ///
     /// Returns:
-    /// * The ETxOutRecord's from when this block was added, or, an error
+    /// * The ETxOutRecord's from when this block was added, or None if the block doesn't exist yet or, an error
     fn get_tx_outs_by_block_and_key(
         &self,
         ingress_key: CompressedRistrettoPublic,
         block_index: u64,
-    ) -> Result<Vec<ETxOutRecord>, Self::Error> {
+    ) -> Result<Option<Vec<ETxOutRecord>>, Self::Error> {
         let conn = self.pool.get()?;
 
         let key_bytes: &[u8] = ingress_key.as_ref();
@@ -735,13 +735,18 @@ impl RecoveryDb for SqlRecoveryDb {
             .filter(schema::ingested_blocks::dsl::block_number.eq(block_index as i64))
             .select(schema::ingested_blocks::dsl::proto_ingested_block_data);
 
-        // The list of fields here must match the .select() clause above.
-        let mut result = Vec::default();
-        for proto_bytes in query.load::<Vec<u8>>(&conn)? {
-            let mut proto = ProtoIngestedBlockData::decode(&*proto_bytes)?;
-            result.append(&mut proto.e_tx_out_records);
+        // The result of load should be 0 or 1, since there is a database constraint
+        // around ingress keys and block indices
+        let protos: Vec<Vec<u8>> = query.load::<Vec<u8>>(&conn)?;
+
+        if protos.is_empty() {
+            Ok(None)
+        } else if protos.len() == 1 {
+            let proto = ProtoIngestedBlockData::decode(&*protos[0])?;
+            Ok(Some(proto.e_tx_out_records))
+        } else {
+            Err(Error::IngestedBlockSchemaViolation(format!("Found {} different entries for ingress_key {:?} and block_index {}, which goes against the constraint", protos.len(), ingress_key, block_index)))
         }
-        Ok(result)
     }
 
     /// Get the cumulative txo count for a given block number.

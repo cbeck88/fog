@@ -412,8 +412,6 @@ where
         // Figure out the higehst fully processed block count and put that in the shared state.
         let (highest_known_block_index, ingress_keys, missing_block_ranges) =
             self.db_fetcher.get_highest_processed_block_context();
-
-        let mut shared_state = self.shared_state.lock().expect("mutex poisoned");
         let (highest_processed_block_count, reason_we_stopped) = self
             .enclave_block_tracker
             .highest_fully_processed_block_count(
@@ -422,6 +420,7 @@ where
                 &missing_block_ranges,
             );
 
+        let mut shared_state = self.shared_state.lock().expect("mutex poisoned");
         if shared_state.highest_processed_block_count != highest_processed_block_count {
             shared_state.highest_processed_block_count = highest_processed_block_count;
             self.last_unblocked_at = Instant::now();
@@ -551,7 +550,8 @@ where
     // So, ask the database.
     // If it doesn't work, hopefully it will work next time.
     fn get_block_signature_timestamp_for_block_count(&self, block_count: u64) -> Option<u64> {
-        if block_count == 0 {
+        // The origin block has no block signature and hence no timestamp
+        if block_count <= 1 {
             return None;
         }
         match self

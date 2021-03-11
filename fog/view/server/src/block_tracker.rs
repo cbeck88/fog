@@ -108,6 +108,8 @@ impl BlockTracker {
                 next_block_count,
             );
 
+            // If the next block index we are checking doesn't exist yet, then we definitely
+            // can't advance the highest processed block count.
             // This breaks the loop if both ingress_keys and missing_block_ranges are empty.
             if highest_known_block_index < next_block_index {
                 log::trace!(

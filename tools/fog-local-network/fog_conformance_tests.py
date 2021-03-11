@@ -414,17 +414,6 @@ class FogConformanceTest:
         print(cmd)
         result = subprocess.check_output(cmd, shell=True)
 
-        # Report a missed block range from 0 to 1. This is needed after FOG-337 and should not be needed after FOG-393
-        cmd = ' '.join([
-            f'exec {FOG_PROJECT_DIR}/{target_dir(self.release)}/fog_ingest_client',
-            f'--uri insecure-fog-ingest://localhost:{BASE_INGEST_CLIENT_PORT}',
-            f'report-missed-block-range',
-            f'--start 0',
-            f'--end 1',
-        ])
-        print(cmd)
-        result = subprocess.check_output(cmd, shell=True)
-
         # Get fog pubkey
         print("Getting fog pubkey...")
         keyfile = os.path.join(self.keys_dir, "account_keys_0.pub")

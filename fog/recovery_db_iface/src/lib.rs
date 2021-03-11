@@ -206,12 +206,14 @@ pub trait RecoveryDb {
     /// * block_index: The block we need ETxOutRecords from
     ///
     /// Returns:
-    /// * The ETxOutRecord's from when this block was added, or, an error
+    /// * Ok(None) if this block has not been scanned with this key.
+    ///   Ok(Some(data)) with the ETxOutRecord's from when this block was added,
+    ///   An error if there is a database error
     fn get_tx_outs_by_block_and_key(
         &self,
         ingress_key: CompressedRistrettoPublic,
         block_index: u64,
-    ) -> Result<Vec<ETxOutRecord>, Self::Error>;
+    ) -> Result<Option<Vec<ETxOutRecord>>, Self::Error>;
 
     /// Get the cumulative txo count for a given block number.
     ///
