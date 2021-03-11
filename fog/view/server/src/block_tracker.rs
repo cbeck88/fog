@@ -45,7 +45,7 @@ impl BlockTracker {
                     next_blocks.insert(rec.key, next_block);
                 }
             } else {
-                // No block has been processed for this invocation id, so the next block is the
+                // No block has been processed for this ingress key, so the next block is the
                 // first one, assuming it can actually be provided by the ingress key.
                 // (It will not be able to provide the start block if it got decommissioned
                 // immediately after starting before scanning any blocks)
