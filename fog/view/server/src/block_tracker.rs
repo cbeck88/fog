@@ -27,7 +27,7 @@ impl BlockTracker {
         }
     }
 
-    // Given a list of ingestable ranges and the current state, calculate which block
+    // Given a list of ingress keys and the current state, calculate which block
     // index needs to be processed next for each ingress key
     pub fn next_blocks(
         &self,
