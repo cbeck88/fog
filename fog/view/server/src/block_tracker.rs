@@ -75,11 +75,6 @@ impl BlockTracker {
     /// their balance up to this block without missing any transactions.
     ///
     /// Arguments:
-    /// * highest_known_block_index:
-    ///   The highest block index known to have appeared in the blockchain.
-    ///   If there are no ingress keys at all right now, then this is also the highest
-    ///   fully-processed block. It is assumed in the algorithm that any new keys will
-    ///   appear with start block after this number.
     /// * ingress_keys:
     ///   IngressPublicKeyRecord's that exist in the database right now.
     ///   This indicates their start block, their last-scanned block, their expiry block,
@@ -93,10 +88,18 @@ impl BlockTracker {
     ///   is less than highest_known_block_index -- the next thing we are waiting on for data.
     pub fn highest_fully_processed_block_count(
         &mut self,
-        highest_known_block_index: u64,
         ingress_keys: &[IngressPublicKeyRecord],
         missing_block_ranges: &[BlockRange],
     ) -> (u64, Option<IngressPublicKeyRecord>) {
+        // The highest known block index is the highest block scanned by any ingress key.
+        // Since all blocks in the database are tied to an ingress key, this is the largest index of any of them.
+        // This has value 0 if there are no ingress keys.
+        let highest_known_block_index = ingress_keys
+            .iter()
+            .filter_map(|rec| rec.last_scanned_block)
+            .max()
+            .unwrap_or(0);
+
         let initial_last_highest_processed_block_count = self.last_highest_processed_block_count;
         let mut reason_we_stopped: Option<IngressPublicKeyRecord> = None;
 
@@ -294,13 +297,12 @@ mod tests {
     // Single key (retired, hasn't scanned anything)
     #[test_with_logger]
     fn next_blocks_single_key_retired_hasnt_scanned(logger: Logger) {
-        // TODO currently failing since even if retired=true next_blocks returns blocks that are
-        // less than the pubkey expiry.
-
         let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
         let mut block_tracker = BlockTracker::new(logger);
+
+        let key = CompressedRistrettoPublic::from_random(&mut rng);
         let rec = IngressPublicKeyRecord {
-            key: CompressedRistrettoPublic::from_random(&mut rng),
+            key,
             status: IngressPublicKeyStatus {
                 start_block: 123,
                 pubkey_expiry: 173,
@@ -309,7 +311,11 @@ mod tests {
             last_scanned_block: None,
         };
 
-        let expected_state = HashMap::from_iter(vec![]);
+        // This is the expected state because, even though the key is retired,
+        // we promised to scan from 123 to 173. So the next thing we need is 123,
+        // until we
+        // unless those blocks are declared missed.
+        let expected_state = HashMap::from_iter(vec![(key, 123)]);
 
         assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
 
@@ -317,14 +323,21 @@ mod tests {
         assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
 
         // Advancing to the next block should return the same result.
-        for i in 0..10 {
+        for i in 0..50 {
             block_tracker.block_processed(rec.key, rec.status.start_block + i);
 
-            assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
+            assert_eq!(
+                block_tracker.next_blocks(&[rec.clone()]),
+                HashMap::from_iter(vec![(key, 123 + i)])
+            );
 
             // Repeated call should result in the same expected result.
             assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
         }
+
+        // Now, we have scanned everything we have promised to scan, next blocks should return empty.
+        let expected_state = HashMap::from_iter(vec![]);
+        assert_eq!(block_tracker.next_blocks(&[rec.clone()]),);
     }
 
     // Single ingestable range (decommissioned, scanned some blocks)
@@ -437,11 +450,7 @@ mod tests {
         // higehst_known_block_index shouldn't affect these tests so we try a bunch of options
         for highest_known_block_index in 0..20 {
             assert_eq!(
-                block_tracker.highest_fully_processed_block_count(
-                    highest_known_block_index,
-                    &[],
-                    &[]
-                ),
+                block_tracker.highest_fully_processed_block_count(&[], &[]),
                 (0, None)
             );
         }
@@ -456,11 +465,7 @@ mod tests {
         // higehst_known_block_index shouldn't affect these tests so we try a bunch of options
         for highest_known_block_index in 0..20 {
             assert_eq!(
-                block_tracker.highest_fully_processed_block_count(
-                    highest_known_block_index,
-                    &[],
-                    &[BlockRange::new(1, 10)]
-                ),
+                block_tracker.highest_fully_processed_block_count(&[], &[BlockRange::new(1, 10)]),
                 (0, None)
             );
         }
@@ -586,11 +591,7 @@ mod tests {
         };
 
         assert_eq!(
-            block_tracker.highest_fully_processed_block_count(
-                0, // TODO try different values
-                &[rec],
-                &[BlockRange::new(0, 10)]
-            ),
+            block_tracker.highest_fully_processed_block_count(&[rec], &[BlockRange::new(0, 10)]),
             (10, None),
         );
         todo!()
@@ -793,7 +794,6 @@ mod tests {
     }
 
     // A block tracker with a multiple ingestable ranges waits for both of them.
-    // blocks.
     #[test_with_logger]
     fn highest_fully_processed_block_tracks_multiple_recs(logger: Logger) {
         let mut block_tracker = BlockTracker::new(logger.clone());
@@ -834,11 +834,8 @@ mod tests {
             block_tracker.block_processed(rec1.key, i);
 
             assert_eq!(
-                block_tracker.highest_fully_processed_block_count(
-                    0,
-                    &[rec1.clone(), rec2.clone()],
-                    &[]
-                ),
+                block_tracker
+                    .highest_fully_processed_block_count(&[rec1.clone(), rec2.clone()], &[]),
                 (min(rec2.status.start_block, i + 1), None)
             );
         }
@@ -848,11 +845,8 @@ mod tests {
             block_tracker.block_processed(rec2.key, rec2.status.start_block + i);
 
             assert_eq!(
-                block_tracker.highest_fully_processed_block_count(
-                    0,
-                    &[rec1.clone(), rec2.clone()],
-                    &[]
-                ),
+                block_tracker
+                    .highest_fully_processed_block_count(&[rec1.clone(), rec2.clone()], &[]),
                 (
                     min(
                         rec1.status.start_block + 20, // We advanced the first range 20 times in the previous loop

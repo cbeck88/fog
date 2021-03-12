@@ -344,7 +344,7 @@ where
     /// Keeps track of which blocks we have fed into the enclave.
     enclave_block_tracker: BlockTracker,
 
-    /// Keeps track ago we weren't blocked from making progress
+    /// Keeps track how long ago it since we made progress, (or complained about not making progress)
     /// When this gets too distant in the past, we log a warning
     last_unblocked_at: Instant,
 
@@ -410,15 +410,11 @@ where
         }
 
         // Figure out the higehst fully processed block count and put that in the shared state.
-        let (highest_known_block_index, ingress_keys, missing_block_ranges) =
+        let (ingress_keys, missing_block_ranges) =
             self.db_fetcher.get_highest_processed_block_context();
         let (highest_processed_block_count, reason_we_stopped) = self
             .enclave_block_tracker
-            .highest_fully_processed_block_count(
-                highest_known_block_index,
-                &ingress_keys,
-                &missing_block_ranges,
-            );
+            .highest_fully_processed_block_count(&ingress_keys, &missing_block_ranges);
 
         let mut shared_state = self.shared_state.lock().expect("mutex poisoned");
         if shared_state.highest_processed_block_count != highest_processed_block_count {
@@ -428,7 +424,7 @@ where
             if let Some(reason_we_stopped) = reason_we_stopped {
                 log::warn!(self.logger, "We seem to be stuck at highest_processed_block_count = {} for at least a minute... we are blocked on an ingress key making progress: {:?}", highest_processed_block_count, reason_we_stopped);
             } else {
-                log::info!(self.logger, "We seem to be stuck at highest_processed_block_count = {} for at least a minute... we have processed all blocks known to the recovery database", highest_processed_block_count);
+                log::debug!(self.logger, "We seem to be stuck at highest_processed_block_count = {} for at least a minute... we have processed all blocks known to the recovery database", highest_processed_block_count);
             }
             // We are still blocked but we don't need to log for another minute
             self.last_unblocked_at = Instant::now();

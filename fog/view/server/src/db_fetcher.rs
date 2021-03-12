@@ -44,9 +44,6 @@ pub struct FetchedRecords {
 /// object.
 #[derive(Default)]
 struct DbFetcherSharedState {
-    /// The highest known block index in the recovery db
-    highest_known_block_index: u64,
-
     /// Information about ingress public keys we are aware of.
     ingress_keys: Vec<IngressPublicKeyRecord>,
 
@@ -125,10 +122,9 @@ impl DbFetcher {
     /// Get context for the enclave block tracker to compute the highest processed block count
     pub fn get_highest_processed_block_context(
         &self,
-    ) -> (u64, Vec<IngressPublicKeyRecord>, Vec<BlockRange>) {
+    ) -> (Vec<IngressPublicKeyRecord>, Vec<BlockRange>) {
         let state = self.shared_state();
         (
-            state.highest_known_block_index,
             state.ingress_keys.clone(),
             state.missing_block_ranges.clone(),
         )
@@ -222,7 +218,7 @@ impl<DB: RecoveryDb + Clone + Send + Sync + 'static> DbFetcherThread<DB> {
     /// are currently alive, which block ranges they are able to cover, and which blocks have they
     /// ingested so far.
     fn load_ingress_keys(&self) {
-        let _metrics_timer = counters::LOAD_INGESTABLE_RANGES_TIME.start_timer();
+        let _metrics_timer = counters::LOAD_INGRESS_KEYS_TIME.start_timer();
 
         match self.db.get_ingress_key_records(0) {
             Ok(records) => {
@@ -315,17 +311,6 @@ impl<DB: RecoveryDb + Clone + Send + Sync + 'static> DbFetcherThread<DB> {
                             block_index,
                             records: tx_outs,
                         });
-                        let new_highest_known_block_index =
-                            core::cmp::max(state.highest_known_block_index, block_index);
-                        if new_highest_known_block_index != state.highest_known_block_index {
-                            log::info!(
-                                self.logger,
-                                "highest known block index has increased from {} to {}",
-                                state.highest_known_block_index,
-                                new_highest_known_block_index
-                            );
-                            state.highest_known_block_index = new_highest_known_block_index;
-                        }
                     }
 
                     // Update metrics.
@@ -361,22 +346,6 @@ impl<DB: RecoveryDb + Clone + Send + Sync + 'static> DbFetcherThread<DB> {
                         err
                     );
                 }
-            }
-        }
-
-        // Even if that for loop was empty, we should maybe update highest known block index
-        if let Ok(Some(block_index)) = self.db.get_highest_known_block_index() {
-            let mut state = self.shared_state();
-            let new_highest_known_block_index =
-                core::cmp::max(state.highest_known_block_index, block_index);
-            if new_highest_known_block_index != state.highest_known_block_index {
-                log::info!(
-                    self.logger,
-                    "highest known block index has increased from {} to {}",
-                    state.highest_known_block_index,
-                    new_highest_known_block_index
-                );
-                state.highest_known_block_index = new_highest_known_block_index;
             }
         }
 
@@ -421,7 +390,7 @@ mod tests {
 
         let mut success = false;
         for _i in 0..500 {
-            let (highest_known_block_index, ingress_keys, missing_block_ranges) =
+            let (ingress_keys, missing_block_ranges) =
                 db_fetcher.get_highest_processed_block_context();
 
             if ingress_keys.is_empty() {
@@ -442,7 +411,6 @@ mod tests {
                 }]
             );
 
-            assert_eq!(highest_known_block_index, 0);
             assert!(missing_block_ranges.is_empty());
             assert!(db_fetcher.get_pending_fetched_records().is_empty());
 
@@ -565,8 +533,7 @@ mod tests {
 
         // TODO The last scanned block index gets updated even though we have a hole.
         // I am not sure this is desirable...
-        let (highest_known_block_index, ingress_keys, missing_block_ranges) =
-            db_fetcher.get_highest_processed_block_context();
+        let (ingress_keys, missing_block_ranges) = db_fetcher.get_highest_processed_block_context();
         assert_eq!(
             ingress_keys,
             vec![IngressPublicKeyRecord {
