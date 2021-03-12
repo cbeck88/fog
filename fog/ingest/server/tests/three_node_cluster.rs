@@ -515,6 +515,8 @@ fn three_node_cluster_fencing(logger: Logger) {
         assert_eq!(node7_key, node8_key);
         assert_eq!(node7_key, node9_key);
 
+        let ingress_key = CompressedRistrettoPublic::try_from(&node7_key).unwrap();
+
         for _reps in 0..2 {
             // Now activate them all, which should work (without raciness) since they can't see eachother, and there are no blocks yet
             // besides origin block
@@ -572,22 +574,12 @@ fn three_node_cluster_fencing(logger: Logger) {
 
             let num_blocks = ledger.num_blocks().unwrap();
 
-            for node in &[&node7, &node8, &node9] {
-                let node_summary = node.get_ingest_summary();
+            let invocation_id = recovery_db
+                .get_invocation_id_by_block_and_key(ingress_key, num_blocks - 1)
+                .unwrap()
+                .unwrap();
 
-                let node_iid = IngestInvocationId::from(node_summary.get_ingest_invocation_id());
-
-                if node_iid == active_iid {
-                    assert_eq!(node_summary.get_next_block_index(), num_blocks);
-                } else {
-                    assert_ne!(node_summary.get_next_block_index(), num_blocks);
-                }
-
-                let tx_outs = recovery_db
-                    .get_tx_outs_by_block(&node_iid, num_blocks - 1)
-                    .unwrap();
-                assert_eq!(tx_outs.is_empty(), node_iid != active_iid);
-            }
+            assert_eq!(active_iid, invocation_id);
         }
 
         // At this point we will have one active node and two inactive ones. The active one won the
@@ -662,10 +654,10 @@ fn three_node_cluster_fencing(logger: Logger) {
             IngestInvocationId::from(node_summary.get_ingest_invocation_id())
         };
 
-        let tx_outs = recovery_db
-            .get_tx_outs_by_block(&node_iid, num_blocks - 1)
+        let invocation_id = recovery_db
+            .get_invocation_id_by_block_and_key(ingress_key, num_blocks - 1)
             .unwrap();
-        assert!(!tx_outs.is_empty());
+        assert_eq!(invocation_id, Some(node_iid));
 
         // Stop all nodes.
         drop(node7);

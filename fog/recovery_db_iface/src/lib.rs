@@ -211,6 +211,24 @@ pub trait RecoveryDb {
         block_index: u64,
     ) -> Result<Option<Vec<ETxOutRecord>>, Self::Error>;
 
+    /// Get the invocation id that published this block with this key.
+    ///
+    /// Note: This is only used by TESTS right now, but it is important to be able to test this
+    ///
+    /// Arguments:
+    /// * ingress_key: The ingress key we are interested in
+    /// * block_index: the blcok we are interested in
+    ///
+    /// REturns:
+    /// * Ok(None) if this block has not been scanned with this key
+    ///   Ok(Some(iid)) if this block has been scanned with this key, and iid is the invocation id that did it
+    ///   An error if there was a database error
+    fn get_invocation_id_by_block_and_key(
+        &self,
+        ingress_key: CompressedRistrettoPublic,
+        block_index: u64,
+    ) -> Result<Option<IngestInvocationId>, Self::Error>;
+
     /// Get the cumulative txo count for a given block number.
     ///
     /// Arguments:

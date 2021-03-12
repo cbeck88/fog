@@ -739,6 +739,34 @@ impl RecoveryDb for SqlRecoveryDb {
         }
     }
 
+    /// Get iid that produced data for given ingress key and a given block index.
+    ///
+    fn get_invocation_id_by_block_and_key(
+        &self,
+        ingress_key: CompressedRistrettoPublic,
+        block_index: u64,
+    ) -> Result<Option<IngestInvocationId>, Self::Error> {
+        let conn = self.pool.get()?;
+
+        let key_bytes: &[u8] = ingress_key.as_ref();
+        let query = schema::ingested_blocks::dsl::ingested_blocks
+            .filter(schema::ingested_blocks::dsl::ingress_public_key.eq(key_bytes))
+            .filter(schema::ingested_blocks::dsl::block_number.eq(block_index as i64))
+            .select(schema::ingested_blocks::dsl::ingest_invocation_id);
+
+        // The result of load should be 0 or 1, since there is a database constraint
+        // around ingress keys and block indices
+        let iids: Vec<i64> = query.load::<i64>(&conn)?;
+
+        if iids.is_empty() {
+            Ok(None)
+        } else if iids.len() == 1 {
+            Ok(Some(iids[0].into()))
+        } else {
+            Err(Error::IngestedBlockSchemaViolation(format!("Found {} different entries for ingress_key {:?} and block_index {}, which goes against the constraint", iids.len(), ingress_key, block_index)))
+        }
+    }
+
     /// Get the cumulative txo count for a given block number.
     ///
     /// Arguments:
