@@ -287,71 +287,70 @@ impl<DB: RecoveryDb + Clone + Send + Sync + 'static> DbFetcherThread<DB> {
             };
 
             match get_tx_outs_by_block_result {
-                Ok(maybe_tx_outs) => {
-                    if let Some(tx_outs) = maybe_tx_outs {
-                        let num_tx_outs = tx_outs.len();
+                Ok(Some(tx_outs)) => {
+                    let num_tx_outs = tx_outs.len();
 
-                        // Log
-                        log::info!(
-                            self.logger,
-                            "ingress_key {:?} fetched {} tx outs for block {}",
+                    // Log
+                    log::info!(
+                        self.logger,
+                        "ingress_key {:?} fetched {} tx outs for block {}",
+                        ingress_key,
+                        num_tx_outs,
+                        block_index,
+                    );
+
+                    // Ingest has produced data for this block, we'd like to keep trying the
+                    // next block on the next loop iteration.
+                    has_more_work = true;
+
+                    // Mark that we are done fetching data for this block.
+                    self.block_tracker.block_processed(ingress_key, block_index);
+
+                    // Store the fetched records so that they could be consumed by the enclave
+                    // when its ready.
+                    {
+                        let mut state = self.shared_state();
+                        state.fetched_records.push(FetchedRecords {
                             ingress_key,
-                            num_tx_outs,
                             block_index,
-                        );
-
-                        // Ingest has produced data for this block, we'd like to keep trying the
-                        // next block on the next loop iteration.
-                        has_more_work = true;
-
-                        // Mark that we are done fetching data for this block.
-                        self.block_tracker.block_processed(ingress_key, block_index);
-
-                        // Store the fetched records so that they could be consumed by the enclave
-                        // when its ready.
-                        {
-                            let mut state = self.shared_state();
-                            state.fetched_records.push(FetchedRecords {
-                                ingress_key,
-                                block_index,
-                                records: tx_outs,
-                            });
-                            let new_highest_known_block_index =
-                                core::cmp::max(state.highest_known_block_index, block_index);
-                            if new_highest_known_block_index != state.highest_known_block_index {
-                                log::info!(
-                                    self.logger,
-                                    "highest known block index has increased from {} to {}",
-                                    state.highest_known_block_index,
-                                    new_highest_known_block_index
-                                );
-                                state.highest_known_block_index = new_highest_known_block_index;
-                            }
+                            records: tx_outs,
+                        });
+                        let new_highest_known_block_index =
+                            core::cmp::max(state.highest_known_block_index, block_index);
+                        if new_highest_known_block_index != state.highest_known_block_index {
+                            log::info!(
+                                self.logger,
+                                "highest known block index has increased from {} to {}",
+                                state.highest_known_block_index,
+                                new_highest_known_block_index
+                            );
+                            state.highest_known_block_index = new_highest_known_block_index;
                         }
-
-                        // Update metrics.
-                        counters::BLOCKS_FETCHED_COUNT.inc();
-                        counters::TXOS_FETCHED_COUNT.inc_by(num_tx_outs as i64);
-
-                        // Block if we have queued up enough records for now.
-                        // (Until the enclave thread drains the queue).
-                        let (lock, condvar) = &*self.num_queued_records_limiter;
-                        let mut num_queued_records = condvar
-                            .wait_while(lock.lock().unwrap(), |num_queued_records| {
-                                *num_queued_records > MAX_QUEUED_RECORDS
-                            })
-                            .expect("condvar wait failed");
-                        *num_queued_records += num_tx_outs;
-
-                        counters::DB_FETCHER_NUM_QUEUED_RECORDS.set(*num_queued_records as i64);
-                    } else {
-                        log::trace!(
-                            self.logger,
-                            "ingress_key {:?} block {} query missed, no new data yet",
-                            ingress_key,
-                            block_index
-                        );
                     }
+
+                    // Update metrics.
+                    counters::BLOCKS_FETCHED_COUNT.inc();
+                    counters::TXOS_FETCHED_COUNT.inc_by(num_tx_outs as i64);
+
+                    // Block if we have queued up enough records for now.
+                    // (Until the enclave thread drains the queue).
+                    let (lock, condvar) = &*self.num_queued_records_limiter;
+                    let mut num_queued_records = condvar
+                        .wait_while(lock.lock().unwrap(), |num_queued_records| {
+                            *num_queued_records > MAX_QUEUED_RECORDS
+                        })
+                        .expect("condvar wait failed");
+                    *num_queued_records += num_tx_outs;
+
+                    counters::DB_FETCHER_NUM_QUEUED_RECORDS.set(*num_queued_records as i64);
+                }
+                Ok(None) => {
+                    log::trace!(
+                        self.logger,
+                        "ingress_key {:?} block {} query missed, no new data yet",
+                        ingress_key,
+                        block_index
+                    );
                 }
                 Err(err) => {
                     log::warn!(
