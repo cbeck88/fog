@@ -210,6 +210,8 @@ mod tests {
     use super::*;
     use fog_recovery_db_iface::IngressPublicKeyStatus;
     use mc_common::logger::test_with_logger;
+    use mc_util_from_random::FromRandom;
+    use rand::{rngs::StdRng, SeedableRng};
     use std::{cmp::min, iter::FromIterator};
 
     #[test_with_logger]
@@ -218,21 +220,22 @@ mod tests {
         assert_eq!(block_tracker.next_blocks(&[]).len(), 0);
     }
 
-    // Single ingestable range (commissioned, hasn't scanned any blocks yet)
+    // Single key (hasn't scanned any blocks yet)
     #[test_with_logger]
-    fn next_blocks_single_range_commissioned_hasnt_scanned(logger: Logger) {
+    fn next_blocks_single_key_hasnt_scanned(logger: Logger) {
+        let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
         let mut block_tracker = BlockTracker::new(logger);
         let rec = IngressPublicKeyRecord {
-            key: CompressedRistrettoPublic::from(1),
+            key: CompressedRistrettoPublic::from_random(&mut rng),
             status: IngressPublicKeyStatus {
                 start_block: 123,
                 pubkey_expiry: 173,
-                expired: false,
+                retired: false,
             },
             last_scanned_block: None,
         };
 
-        let expected_state = HashMap::from_iter(vec![(rec.key, rec.start_block)]);
+        let expected_state = HashMap::from_iter(vec![(rec.key, rec.status.start_block)]);
 
         assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
 
@@ -241,9 +244,10 @@ mod tests {
 
         // Advancing to the next block should advance the expected result.
         for i in 0..10 {
-            block_tracker.block_processed(rec.key, rec.start_block + i);
+            block_tracker.block_processed(rec.key, rec.status.start_block + i);
 
-            let expected_state = HashMap::from_iter(vec![(rec.key, rec.start_block + i + 1)]);
+            let expected_state =
+                HashMap::from_iter(vec![(rec.key, rec.status.start_block + i + 1)]);
 
             assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
 
@@ -255,214 +259,172 @@ mod tests {
     // Single ingestable range (commissioned, scanned some blocks)
     #[test_with_logger]
     fn next_blocks_single_range_commissioned_scanned_some(logger: Logger) {
+        let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
         let mut block_tracker = BlockTracker::new(logger);
-        let ingestable_range = IngestableRange {
-            id: IngestInvocationId::from(1),
-            start_block: 123,
-            decommissioned: false,
-            last_ingested_block: Some(126),
+        let rec = IngressPublicKeyRecord {
+            key: CompressedRistrettoPublic::from_random(&mut rng),
+            status: IngressPublicKeyStatus {
+                start_block: 123,
+                pubkey_expiry: 173,
+                retired: false,
+            },
+            last_scanned_block: Some(126),
         };
+        let expected_state = HashMap::from_iter(vec![(rec.key, rec.status.start_block)]);
 
-        let expected_state =
-            HashMap::from_iter(vec![(ingestable_range.id, ingestable_range.start_block)]);
-
-        assert_eq!(
-            block_tracker.next_blocks(&[ingestable_range.clone()]),
-            expected_state
-        );
+        assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
 
         // Repeated call should result in the same expected result.
-        assert_eq!(
-            block_tracker.next_blocks(&[ingestable_range.clone()]),
-            expected_state
-        );
+        assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
 
         // Advancing to the next block should advance the expected result.
         for i in 0..10 {
-            block_tracker.block_processed(ingestable_range.id, ingestable_range.start_block + i);
+            block_tracker.block_processed(rec.key, rec.status.start_block + i);
 
-            let expected_state = HashMap::from_iter(vec![(
-                ingestable_range.id,
-                ingestable_range.start_block + i + 1,
-            )]);
+            let expected_state =
+                HashMap::from_iter(vec![(rec.key, rec.status.start_block + i + 1)]);
 
-            assert_eq!(
-                block_tracker.next_blocks(&[ingestable_range.clone()]),
-                expected_state
-            );
+            assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
 
             // Repeated call should result in the same expected result.
-            assert_eq!(
-                block_tracker.next_blocks(&[ingestable_range.clone()]),
-                expected_state
-            );
+            assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
         }
     }
 
-    // Single ingestable range (decommissioned, hasn't scanned anything)
+    // Single key (retired, hasn't scanned anything)
     #[test_with_logger]
-    fn next_blocks_single_range_decommissioned_hasnt_scanned(logger: Logger) {
+    fn next_blocks_single_key_retired_hasnt_scanned(logger: Logger) {
+        // TODO currently failing since even if retired=true next_blocks returns blocks that are
+        // less than the pubkey expiry.
+
+        let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
         let mut block_tracker = BlockTracker::new(logger);
-        let ingestable_range = IngestableRange {
-            id: IngestInvocationId::from(1),
-            start_block: 123,
-            decommissioned: true,
-            last_ingested_block: None,
+        let rec = IngressPublicKeyRecord {
+            key: CompressedRistrettoPublic::from_random(&mut rng),
+            status: IngressPublicKeyStatus {
+                start_block: 123,
+                pubkey_expiry: 173,
+                retired: true,
+            },
+            last_scanned_block: None,
         };
 
         let expected_state = HashMap::from_iter(vec![]);
 
-        assert_eq!(
-            block_tracker.next_blocks(&[ingestable_range.clone()]),
-            expected_state
-        );
+        assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
 
         // Repeated call should result in the same expected result.
-        assert_eq!(
-            block_tracker.next_blocks(&[ingestable_range.clone()]),
-            expected_state
-        );
+        assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
 
         // Advancing to the next block should return the same result.
         for i in 0..10 {
-            block_tracker.block_processed(ingestable_range.id, ingestable_range.start_block + i);
+            block_tracker.block_processed(rec.key, rec.status.start_block + i);
 
-            assert_eq!(
-                block_tracker.next_blocks(&[ingestable_range.clone()]),
-                expected_state
-            );
+            assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
 
             // Repeated call should result in the same expected result.
-            assert_eq!(
-                block_tracker.next_blocks(&[ingestable_range.clone()]),
-                expected_state
-            );
+            assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
         }
     }
 
     // Single ingestable range (decommissioned, scanned some blocks)
     #[test_with_logger]
-    fn next_blocks_single_range_decommissioned_scanned_some(logger: Logger) {
+    fn next_blocks_single_range_retired_scanned_some(logger: Logger) {
+        // TODO currently failing since last_scanned_block does not play into next_blocks
+
+        let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
         let mut block_tracker = BlockTracker::new(logger);
         let last_ingested_block = 126;
-        let ingestable_range = IngestableRange {
-            id: IngestInvocationId::from(1),
-            start_block: 123,
-            decommissioned: true,
-            last_ingested_block: Some(last_ingested_block.clone()),
+        let rec = IngressPublicKeyRecord {
+            key: CompressedRistrettoPublic::from_random(&mut rng),
+            status: IngressPublicKeyStatus {
+                start_block: 123,
+                pubkey_expiry: 173,
+                retired: true,
+            },
+            last_scanned_block: Some(last_ingested_block),
         };
 
-        let expected_state =
-            HashMap::from_iter(vec![(ingestable_range.id, ingestable_range.start_block)]);
+        let expected_state = HashMap::from_iter(vec![(rec.key, rec.status.start_block)]);
 
-        assert_eq!(
-            block_tracker.next_blocks(&[ingestable_range.clone()]),
-            expected_state
-        );
+        assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
 
         // Repeated call should result in the same expected result.
-        assert_eq!(
-            block_tracker.next_blocks(&[ingestable_range.clone()]),
-            expected_state
-        );
+        assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
 
         // Advancing to the next block should advance the expected result.
         for i in 0..10 {
-            block_tracker.block_processed(ingestable_range.id, ingestable_range.start_block + i);
+            block_tracker.block_processed(rec.key, rec.status.start_block + i);
 
             // Capped at the last block that was scanned.
-            let expected_state = if ingestable_range.start_block + i + 1 <= last_ingested_block {
-                HashMap::from_iter(vec![(
-                    ingestable_range.id,
-                    ingestable_range.start_block + i + 1,
-                )])
+            let expected_state = if rec.status.start_block + i + 1 <= last_ingested_block {
+                HashMap::from_iter(vec![(rec.key, rec.status.start_block + i + 1)])
             } else {
                 HashMap::default()
             };
 
-            assert_eq!(
-                block_tracker.next_blocks(&[ingestable_range.clone()]),
-                expected_state
-            );
+            assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
 
             // Repeated call should result in the same expected result.
-            assert_eq!(
-                block_tracker.next_blocks(&[ingestable_range.clone()]),
-                expected_state
-            );
+            assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
         }
     }
 
     // Two ingestable ranges should advance independently of eachother
     #[test_with_logger]
-    fn next_blocks_multiple_ranges(logger: Logger) {
+    fn next_blocks_multiple_keys(logger: Logger) {
+        let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
         let mut block_tracker = BlockTracker::new(logger);
-        let ingestable_range1 = IngestableRange {
-            id: IngestInvocationId::from(1),
-            start_block: 123,
-            decommissioned: false,
-            last_ingested_block: None,
+        let rec1 = IngressPublicKeyRecord {
+            key: CompressedRistrettoPublic::from_random(&mut rng),
+            status: IngressPublicKeyStatus {
+                start_block: 123,
+                pubkey_expiry: 200,
+                retired: false,
+            },
+            last_scanned_block: None,
+        };
+        let rec2 = IngressPublicKeyRecord {
+            key: CompressedRistrettoPublic::from_random(&mut rng),
+            status: IngressPublicKeyStatus {
+                start_block: 3000,
+                pubkey_expiry: 200,
+                retired: false,
+            },
+            last_scanned_block: None,
         };
 
-        let ingestable_range2 = IngestableRange {
-            id: IngestInvocationId::from(2),
-            start_block: 3000,
-            decommissioned: false,
-            last_ingested_block: None,
-        };
+        let expected_state = HashMap::from_iter(vec![(rec1.key, rec1.status.start_block)]);
 
-        let expected_state =
-            HashMap::from_iter(vec![(ingestable_range1.id, ingestable_range1.start_block)]);
-
-        assert_eq!(
-            block_tracker.next_blocks(&[ingestable_range1.clone()]),
-            expected_state
-        );
+        assert_eq!(block_tracker.next_blocks(&[rec1.clone()]), expected_state);
 
         // Repeated call should result in the same expected result.
-        assert_eq!(
-            block_tracker.next_blocks(&[ingestable_range1.clone()]),
-            expected_state
-        );
+        assert_eq!(block_tracker.next_blocks(&[rec1.clone()]), expected_state);
 
         // Try again with the second ingestable range.
-        let expected_state =
-            HashMap::from_iter(vec![(ingestable_range2.id, ingestable_range2.start_block)]);
+        let expected_state = HashMap::from_iter(vec![(rec2.key, rec2.status.start_block)]);
 
-        assert_eq!(
-            block_tracker.next_blocks(&[ingestable_range2.clone()]),
-            expected_state
-        );
+        assert_eq!(block_tracker.next_blocks(&[rec2.clone()]), expected_state);
 
         // Advancing the first one should not affect the second.
-        block_tracker.block_processed(ingestable_range1.id, ingestable_range1.start_block);
+        block_tracker.block_processed(rec1.key, rec1.status.start_block);
 
-        let expected_state = HashMap::from_iter(vec![(
-            ingestable_range1.id,
-            ingestable_range1.start_block + 1,
-        )]);
+        let expected_state = HashMap::from_iter(vec![(rec1.key, rec1.status.start_block + 1)]);
 
-        assert_eq!(
-            block_tracker.next_blocks(&[ingestable_range1.clone()]),
-            expected_state
-        );
+        assert_eq!(block_tracker.next_blocks(&[rec1.clone()]), expected_state);
 
-        let expected_state =
-            HashMap::from_iter(vec![(ingestable_range2.id, ingestable_range2.start_block)]);
+        let expected_state = HashMap::from_iter(vec![(rec2.key, rec2.status.start_block)]);
 
-        assert_eq!(
-            block_tracker.next_blocks(&[ingestable_range2.clone()]),
-            expected_state
-        );
+        assert_eq!(block_tracker.next_blocks(&[rec2.clone()]), expected_state);
 
         // Try with both.
         let expected_state = HashMap::from_iter(vec![
-            (ingestable_range1.id, ingestable_range1.start_block + 1),
-            (ingestable_range2.id, ingestable_range2.start_block),
+            (rec1.key, rec1.status.start_block + 1),
+            (rec2.key, rec2.status.start_block),
         ]);
 
         assert_eq!(
-            block_tracker.next_blocks(&[ingestable_range1.clone(), ingestable_range2.clone()]),
+            block_tracker.next_blocks(&[rec1.clone(), rec2.clone()]),
             expected_state
         );
     }
@@ -472,10 +434,18 @@ mod tests {
     fn highest_fully_processed_block_count_all_empty(logger: Logger) {
         let mut block_tracker = BlockTracker::new(logger.clone());
 
-        assert_eq!(
-            block_tracker.highest_fully_processed_block_count(&[], &[]),
-            0
-        );
+        // higehst_known_block_index shouldn't affect these tests so we try a bunch of options
+        for highest_known_block_index in 0..20 {
+            assert_eq!(
+                block_tracker.highest_fully_processed_block_count(
+                    highest_known_block_index,
+                    &[],
+                    &[]
+                ),
+                (0, None)
+            );
+        }
+        todo!()
     }
 
     // A missing range that doesn't start at block 0 should not affect the count.
@@ -483,10 +453,18 @@ mod tests {
     fn highest_fully_processed_block_count_some_missing_blocks(logger: Logger) {
         let mut block_tracker = BlockTracker::new(logger.clone());
 
-        assert_eq!(
-            block_tracker.highest_fully_processed_block_count(&[], &[BlockRange::new(1, 10)]),
-            0
-        );
+        // higehst_known_block_index shouldn't affect these tests so we try a bunch of options
+        for highest_known_block_index in 0..20 {
+            assert_eq!(
+                block_tracker.highest_fully_processed_block_count(
+                    highest_known_block_index,
+                    &[],
+                    &[BlockRange::new(1, 10)]
+                ),
+                (0, None)
+            );
+        }
+        todo!()
     }
 
     // A missing range that does start at block 0 should advance the count to the end of the
@@ -495,10 +473,18 @@ mod tests {
     fn highest_fully_processed_block_count_starts_with_missing_blocks(logger: Logger) {
         let mut block_tracker = BlockTracker::new(logger.clone());
 
-        assert_eq!(
-            block_tracker.highest_fully_processed_block_count(&[], &[BlockRange::new(0, 10)]),
-            10
-        );
+        // higehst_known_block_index shouldn't affect these tests so we try a bunch of options
+        for highest_known_block_index in 0..20 {
+            assert_eq!(
+                block_tracker.highest_fully_processed_block_count(
+                    highest_known_block_index,
+                    &[],
+                    &[BlockRange::new(0, 10)]
+                ),
+                (10, None)
+            );
+        }
+        todo!()
     }
 
     // Multiple missing ranges are handled appropriately
@@ -506,13 +492,18 @@ mod tests {
     fn highest_fully_processed_block_missing_blocks_consecutivie_missing1(logger: Logger) {
         let mut block_tracker = BlockTracker::new(logger.clone());
 
-        assert_eq!(
-            block_tracker.highest_fully_processed_block_count(
-                &[],
-                &[BlockRange::new(0, 10), BlockRange::new(20, 30)]
-            ),
-            10
-        );
+        // higehst_known_block_index shouldn't affect these tests so we try a bunch of options
+        for highest_known_block_index in 0..20 {
+            assert_eq!(
+                block_tracker.highest_fully_processed_block_count(
+                    highest_known_block_index,
+                    &[],
+                    &[BlockRange::new(0, 10), BlockRange::new(20, 30)]
+                ),
+                (10, None)
+            );
+        }
+        todo!()
     }
 
     // Multiple missing ranges are handled appropriately
@@ -522,6 +513,7 @@ mod tests {
 
         assert_eq!(
             block_tracker.highest_fully_processed_block_count(
+                100,
                 &[],
                 &[
                     BlockRange::new(0, 10),
@@ -529,49 +521,79 @@ mod tests {
                     BlockRange::new(10, 20)
                 ]
             ),
-            30
+            (30, None),
         );
+
+        assert_eq!(
+            block_tracker.highest_fully_processed_block_count(
+                25, // This should cap us
+                &[],
+                &[
+                    BlockRange::new(0, 10),
+                    BlockRange::new(20, 30),
+                    BlockRange::new(10, 20)
+                ]
+            ),
+            (25, None),
+        );
+        todo!()
     }
 
-    // Check with an ingestable range that hasn't yet processed anything.
+    // Check with a key that hasn't yet processed anything.
     #[test_with_logger]
     fn highest_fully_processed_block_missing_blocks_nothing_processed1(logger: Logger) {
         let mut block_tracker = BlockTracker::new(logger.clone());
-
-        let ingestable_range = IngestableRange {
-            id: IngestInvocationId::from(1),
-            start_block: 0,
-            decommissioned: false,
-            last_ingested_block: None,
+        let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
+        let rec = IngressPublicKeyRecord {
+            key: CompressedRistrettoPublic::from_random(&mut rng),
+            status: IngressPublicKeyStatus {
+                start_block: 12,
+                pubkey_expiry: 17,
+                retired: false,
+            },
+            last_scanned_block: None,
         };
 
-        assert_eq!(
-            block_tracker.highest_fully_processed_block_count(&[ingestable_range], &[]),
-            0
-        );
+        // higehst_known_block_index shouldn't affect these tests so we try a bunch of options
+        for highest_known_block_index in 0..20 {
+            assert_eq!(
+                block_tracker.highest_fully_processed_block_count(
+                    highest_known_block_index,
+                    &[rec.clone()],
+                    &[]
+                ),
+                (0, None),
+            );
+        }
+        todo!()
     }
 
-    // Check with an ingestable range that hasn't yet processed anything but has missing blocks.
+    // Check with a key that hasn't yet processed anything but has missing blocks.
     #[test_with_logger]
     fn highest_fully_processed_block_missing_blocks_consecutivie_nothing_processed2(
         logger: Logger,
     ) {
         let mut block_tracker = BlockTracker::new(logger.clone());
-
-        let ingestable_range = IngestableRange {
-            id: IngestInvocationId::from(1),
-            start_block: 0,
-            decommissioned: false,
-            last_ingested_block: None,
+        let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
+        let rec = IngressPublicKeyRecord {
+            key: CompressedRistrettoPublic::from_random(&mut rng),
+            status: IngressPublicKeyStatus {
+                start_block: 12,
+                pubkey_expiry: 17,
+                retired: false,
+            },
+            last_scanned_block: None,
         };
 
         assert_eq!(
             block_tracker.highest_fully_processed_block_count(
-                &[ingestable_range],
+                0, // TODO try different values
+                &[rec],
                 &[BlockRange::new(0, 10)]
             ),
-            10
+            (10, None),
         );
+        todo!()
     }
 
     // A block tracker with a single ingestable range tracks it properly as blocks are
@@ -580,26 +602,31 @@ mod tests {
     fn highest_fully_processed_block_tracks_block_processed1(logger: Logger) {
         let mut block_tracker = BlockTracker::new(logger.clone());
 
-        let ingestable_range = IngestableRange {
-            id: IngestInvocationId::from(1),
-            start_block: 0,
-            decommissioned: false,
-            last_ingested_block: None,
+        let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
+        let rec = IngressPublicKeyRecord {
+            key: CompressedRistrettoPublic::from_random(&mut rng),
+            status: IngressPublicKeyStatus {
+                start_block: 0,
+                pubkey_expiry: 17,
+                retired: false,
+            },
+            last_scanned_block: None,
         };
 
         for i in 0..10 {
             assert_eq!(
-                block_tracker.highest_fully_processed_block_count(&[ingestable_range.clone()], &[]),
-                ingestable_range.start_block + i,
+                block_tracker.highest_fully_processed_block_count(0, &[rec.clone()], &[]),
+                (rec.status.start_block + i, None)
             );
 
-            block_tracker.block_processed(ingestable_range.id, ingestable_range.start_block + i);
+            block_tracker.block_processed(rec.key, rec.status.start_block + i);
 
             assert_eq!(
-                block_tracker.highest_fully_processed_block_count(&[ingestable_range.clone()], &[]),
-                ingestable_range.start_block + i + 1,
+                block_tracker.highest_fully_processed_block_count(0, &[rec.clone()], &[]),
+                (rec.status.start_block + i + 1, None)
             );
         }
+        todo!()
     }
 
     // A block tracker with a single ingestable range ignores it if the start block is higher than
@@ -608,26 +635,31 @@ mod tests {
     fn highest_fully_processed_block_tracks_block_processed2(logger: Logger) {
         let mut block_tracker = BlockTracker::new(logger.clone());
 
-        let ingestable_range = IngestableRange {
-            id: IngestInvocationId::from(1),
-            start_block: 10,
-            decommissioned: false,
-            last_ingested_block: None,
+        let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
+        let rec = IngressPublicKeyRecord {
+            key: CompressedRistrettoPublic::from_random(&mut rng),
+            status: IngressPublicKeyStatus {
+                start_block: 10,
+                pubkey_expiry: 17,
+                retired: false,
+            },
+            last_scanned_block: None,
         };
 
         for i in 0..10 {
             assert_eq!(
-                block_tracker.highest_fully_processed_block_count(&[ingestable_range.clone()], &[]),
-                0
+                block_tracker.highest_fully_processed_block_count(0, &[rec.clone()], &[]),
+                (0, None)
             );
 
-            block_tracker.block_processed(ingestable_range.id, ingestable_range.start_block + i);
+            block_tracker.block_processed(rec.key, rec.status.start_block + i);
 
             assert_eq!(
-                block_tracker.highest_fully_processed_block_count(&[ingestable_range.clone()], &[]),
-                0,
+                block_tracker.highest_fully_processed_block_count(0, &[rec.clone()], &[]),
+                (0, None)
             );
         }
+        todo!()
     }
 
     // A block tracker with a single ingestable range respects missing ranges before the processed
@@ -636,34 +668,41 @@ mod tests {
     fn highest_fully_processed_block_tracks_with_missing_blocks_before(logger: Logger) {
         let mut block_tracker = BlockTracker::new(logger.clone());
 
-        let ingestable_range = IngestableRange {
-            id: IngestInvocationId::from(1),
-            start_block: 10,
-            decommissioned: false,
-            last_ingested_block: None,
+        let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
+        let rec = IngressPublicKeyRecord {
+            key: CompressedRistrettoPublic::from_random(&mut rng),
+            status: IngressPublicKeyStatus {
+                start_block: 10,
+                pubkey_expiry: 17,
+                retired: false,
+            },
+            last_scanned_block: None,
         };
 
-        let missing_ranges = vec![BlockRange::new(0, ingestable_range.start_block)];
+        let missing_ranges = vec![BlockRange::new(0, rec.status.start_block)];
 
         for i in 0..10 {
             assert_eq!(
                 block_tracker.highest_fully_processed_block_count(
-                    &[ingestable_range.clone()],
+                    0,
+                    &[rec.clone()],
                     &missing_ranges
                 ),
-                ingestable_range.start_block + i,
+                (rec.status.start_block + i, None)
             );
 
-            block_tracker.block_processed(ingestable_range.id, ingestable_range.start_block + i);
+            block_tracker.block_processed(rec.key, rec.status.start_block + i);
 
             assert_eq!(
                 block_tracker.highest_fully_processed_block_count(
-                    &[ingestable_range.clone()],
+                    0,
+                    &[rec.clone()],
                     &missing_ranges
                 ),
-                ingestable_range.start_block + i + 1,
+                (rec.status.start_block + i + 1, None)
             );
         }
+        todo!()
     }
 
     // A block tracker with a single ingestable range respects missing ranges after the processed
@@ -672,11 +711,15 @@ mod tests {
     fn highest_fully_processed_block_tracks_with_missing_blocks_after(logger: Logger) {
         let mut block_tracker = BlockTracker::new(logger.clone());
 
-        let ingestable_range = IngestableRange {
-            id: IngestInvocationId::from(1),
-            start_block: 0,
-            decommissioned: false,
-            last_ingested_block: None,
+        let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
+        let rec = IngressPublicKeyRecord {
+            key: CompressedRistrettoPublic::from_random(&mut rng),
+            status: IngressPublicKeyStatus {
+                start_block: 0,
+                pubkey_expiry: 17,
+                retired: false,
+            },
+            last_scanned_block: None,
         };
 
         let missing_ranges = vec![
@@ -688,30 +731,33 @@ mod tests {
         for i in 0..10 {
             assert_eq!(
                 block_tracker.highest_fully_processed_block_count(
-                    &[ingestable_range.clone()],
+                    0,
+                    &[rec.clone()],
                     &missing_ranges
                 ),
-                ingestable_range.start_block + i,
+                (rec.status.start_block + i, None)
             );
 
-            block_tracker.block_processed(ingestable_range.id, ingestable_range.start_block + i);
+            block_tracker.block_processed(rec.key, rec.status.start_block + i);
 
             // The last iteration moves ahead due to the missed block ranges.
             if i == 9 {
                 assert_eq!(
                     block_tracker.highest_fully_processed_block_count(
-                        &[ingestable_range.clone()],
+                        0,
+                        &[rec.clone()],
                         &missing_ranges
                     ),
-                    30
+                    (30, None)
                 );
             } else {
                 assert_eq!(
                     block_tracker.highest_fully_processed_block_count(
-                        &[ingestable_range.clone()],
+                        0,
+                        &[rec.clone()],
                         &missing_ranges
                     ),
-                    ingestable_range.start_block + i + 1,
+                    (rec.status.start_block + i + 1, None)
                 );
             }
         }
@@ -719,91 +765,105 @@ mod tests {
         // Proccess blocks 10-29, this should not change anything since they were reported as
         // missing.
         for i in 10..30 {
-            block_tracker.block_processed(ingestable_range.id, i);
+            block_tracker.block_processed(rec.key, i);
             assert_eq!(
                 block_tracker.highest_fully_processed_block_count(
-                    &[ingestable_range.clone()],
+                    0,
+                    &[rec.clone()],
                     &missing_ranges
                 ),
-                30
+                (30, None)
             );
         }
 
         // Process block #30, this should get us to #31
-        block_tracker.block_processed(ingestable_range.id, 30);
+        block_tracker.block_processed(rec.key, 30);
         assert_eq!(
-            block_tracker
-                .highest_fully_processed_block_count(&[ingestable_range.clone()], &missing_ranges),
-            31
+            block_tracker.highest_fully_processed_block_count(0, &[rec.clone()], &missing_ranges),
+            (31, None)
         );
 
         // Process block 31, this should get us to 40 (due to missed range)
-        block_tracker.block_processed(ingestable_range.id, 31);
+        block_tracker.block_processed(rec.key, 31);
         assert_eq!(
-            block_tracker
-                .highest_fully_processed_block_count(&[ingestable_range.clone()], &missing_ranges),
-            40
+            block_tracker.highest_fully_processed_block_count(0, &[rec.clone()], &missing_ranges),
+            (40, None)
         );
+        todo!()
     }
 
     // A block tracker with a multiple ingestable ranges waits for both of them.
     // blocks.
     #[test_with_logger]
-    fn highest_fully_processed_block_tracks_multiple_ingestable_ranges(logger: Logger) {
+    fn highest_fully_processed_block_tracks_multiple_recs(logger: Logger) {
         let mut block_tracker = BlockTracker::new(logger.clone());
 
-        let ingestable_range1 = IngestableRange {
-            id: IngestInvocationId::from(1),
-            start_block: 0,
-            decommissioned: false,
-            last_ingested_block: None,
+        let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
+        let rec1 = IngressPublicKeyRecord {
+            key: CompressedRistrettoPublic::from_random(&mut rng),
+            status: IngressPublicKeyStatus {
+                start_block: 0,
+                pubkey_expiry: 17,
+                retired: false,
+            },
+            last_scanned_block: None,
         };
-
-        let ingestable_range2 = IngestableRange {
-            id: IngestInvocationId::from(2),
-            start_block: 10,
-            decommissioned: false,
-            last_ingested_block: None,
+        let rec2 = IngressPublicKeyRecord {
+            key: CompressedRistrettoPublic::from_random(&mut rng),
+            status: IngressPublicKeyStatus {
+                start_block: 10,
+                pubkey_expiry: 17,
+                retired: false,
+            },
+            last_scanned_block: None,
         };
 
         // Initially, we're at 0.
         assert_eq!(
             block_tracker.highest_fully_processed_block_count(
-                &[ingestable_range1.clone(), ingestable_range2.clone()],
+                0,
+                &[rec1.clone(), rec2.clone()],
                 &[]
             ),
-            0
+            (0, None)
         );
 
         // Advancing the first ingestable range would only get us up to 10 since at that point we
         // also need the 2nd range to advance.
         for i in 0..20 {
-            block_tracker.block_processed(ingestable_range1.id, i);
+            block_tracker.block_processed(rec1.key, i);
 
             assert_eq!(
                 block_tracker.highest_fully_processed_block_count(
-                    &[ingestable_range1.clone(), ingestable_range2.clone()],
+                    0,
+                    &[rec1.clone(), rec2.clone()],
                     &[]
                 ),
-                min(ingestable_range2.start_block, i + 1),
+                (min(rec2.status.start_block, i + 1), None)
             );
         }
 
         // Advancing the second range would get us all the way to the first one and stop there.
         for i in 0..40 {
-            block_tracker.block_processed(ingestable_range2.id, ingestable_range2.start_block + i);
+            block_tracker.block_processed(rec2.key, rec2.status.start_block + i);
 
             assert_eq!(
                 block_tracker.highest_fully_processed_block_count(
-                    &[ingestable_range1.clone(), ingestable_range2.clone()],
+                    0,
+                    &[rec1.clone(), rec2.clone()],
                     &[]
                 ),
-                min(
-                    ingestable_range1.start_block + 20, // We advanced the first range 20 times in the previous loop
-                    ingestable_range2.start_block + i + 1
-                ),
+                (
+                    min(
+                        rec1.status.start_block + 20, // We advanced the first range 20 times in the previous loop
+                        rec2.status.start_block + i + 1
+                    ),
+                    None
+                )
             );
         }
+
+        todo!()
     }
 
     // Higehst known block count is 0 when there are no inputs.
@@ -817,15 +877,16 @@ mod tests {
     // Highest known block count is set to the highest block count that was processed.
     #[test_with_logger]
     fn highest_known_block_count_tracks_processed(logger: Logger) {
+        let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
         let mut block_tracker = BlockTracker::new(logger);
 
-        block_tracker.block_processed(IngestInvocationId::from(1), 100);
+        block_tracker.block_processed(CompressedRistrettoPublic::from_random(&mut rng), 100);
         assert_eq!(block_tracker.highest_known_block_count(), 101);
 
-        block_tracker.block_processed(IngestInvocationId::from(2), 80);
+        block_tracker.block_processed(CompressedRistrettoPublic::from_random(&mut rng), 80);
         assert_eq!(block_tracker.highest_known_block_count(), 101);
 
-        block_tracker.block_processed(IngestInvocationId::from(3), 101);
+        block_tracker.block_processed(CompressedRistrettoPublic::from_random(&mut rng), 101);
         assert_eq!(block_tracker.highest_known_block_count(), 102);
     }
 }
