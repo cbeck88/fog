@@ -391,64 +391,76 @@ impl<DB: RecoveryDb + Clone + Send + Sync + 'static> DbFetcherThread<DB> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fog_recovery_db_iface::{IngressPublicKeyStatus, ReportData, ReportDb};
     use fog_sql_recovery_db::test_utils::SqlRecoveryDbTestContext;
     use fog_test_infra::db_tests::random_kex_rng_pubkey;
+    use mc_attest_core::VerificationReport;
     use mc_common::logger::test_with_logger;
-    use mc_crypto_keys::{CompressedRistrettoPublic, RistrettoPublic};
     use mc_util_from_random::FromRandom;
     use rand::{rngs::StdRng, SeedableRng};
     use std::{thread::sleep, time::Duration};
 
     #[test_with_logger]
-    fn basic_single_range(logger: Logger) {
+    fn basic_single_ingress_key(logger: Logger) {
         let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
         let db_test_context = SqlRecoveryDbTestContext::new(logger.clone());
         let db = db_test_context.get_db_instance();
         let db_fetcher = DbFetcher::new(db.clone(), logger);
 
         // Initially, our database starts empty.
-        assert!(db_fetcher.known_ingestable_ranges().is_empty());
-        assert!(db_fetcher.known_missing_block_ranges().is_empty());
+        let (highest_known_block_index, ingress_keys, missing_block_ranges) =
+            db_fetcher.get_highest_processed_block_context();
+        assert_eq!(highest_known_block_index, 0);
+        assert!(ingress_keys.is_empty());
+        assert!(missing_block_ranges.is_empty());
         assert!(db_fetcher.get_pending_fetched_records().is_empty());
 
-        // Register a new ingest invocation with start block 0.
-        // We should see it in known ingestable ranges.
-        let key1 = CompressedRistrettoPublic::from(RistrettoPublic::from_random(&mut rng));
-        db.new_ingress_key(&key1, 0).unwrap();
-        let invoc_id1 = db
-            .new_ingest_invocation(None, &key1, &random_kex_rng_pubkey(&mut rng), 0)
-            .unwrap();
+        // Register a new ingress key with start block 10 and check that wer can see it.
+        let ingress_key = CompressedRistrettoPublic::from_random(&mut rng);
+        db.new_ingress_key(&ingress_key, 10).unwrap();
 
         let mut success = false;
         for _i in 0..500 {
-            let ranges = db_fetcher.known_ingestable_ranges();
-            if ranges.is_empty() {
+            let (highest_known_block_index, ingress_keys, missing_block_ranges) =
+                db_fetcher.get_highest_processed_block_context();
+
+            if ingress_keys.is_empty() {
                 sleep(Duration::from_millis(10));
                 continue;
             }
 
             assert_eq!(
-                ranges,
-                vec![IngestableRange {
-                    id: invoc_id1,
-                    start_block: 0,
-                    decommissioned: false,
-                    last_ingested_block: None,
+                ingress_keys,
+                vec![IngressPublicKeyRecord {
+                    key: ingress_key.clone(),
+                    status: IngressPublicKeyStatus {
+                        start_block: 10,
+                        pubkey_expiry: 0,
+                        retired: false,
+                    },
+                    last_scanned_block: None,
                 }]
             );
+
+            assert_eq!(highest_known_block_index, 0);
+            assert!(missing_block_ranges.is_empty());
+            assert!(db_fetcher.get_pending_fetched_records().is_empty());
+
             success = true;
             break;
         }
+
         assert!(success);
 
-        assert!(db_fetcher.known_missing_block_ranges().is_empty());
-        assert!(db_fetcher.get_pending_fetched_records().is_empty());
-
         // Add some blocks, they should get picked up and find their way into pending fetched
-        // records.
+        // records and last_scanned_block.
+        let invoc_id1 = db
+            .new_ingest_invocation(None, &ingress_key, &random_kex_rng_pubkey(&mut rng), 10)
+            .unwrap();
+
         let mut blocks_and_records = Vec::new();
-        for i in 0..10 {
-            let (block, records) = fog_test_infra::db_tests::random_block(&mut rng, i, 5); // 5 outputs per block
+        for block_index in 10..20 {
+            let (block, records) = fog_test_infra::db_tests::random_block(&mut rng, block_index, 5); // 5 outputs per block
 
             db.add_block_data(&invoc_id1, &block, 0, &records).unwrap();
             blocks_and_records.push((block, records));
@@ -467,16 +479,33 @@ mod tests {
         assert_eq!(fetched_records.len(), blocks_and_records.len());
 
         for (i, fetched_record) in fetched_records.iter().enumerate() {
-            assert_eq!(fetched_record.ingest_invocation_id, invoc_id1);
-            assert_eq!(fetched_record.block_index, i as u64);
+            assert_eq!(fetched_record.ingress_key, ingress_key);
+            assert_eq!(fetched_record.block_index, i as u64 + 10); // We started at block index 10
             assert_eq!(blocks_and_records[i].1, fetched_record.records);
         }
 
         assert!(db_fetcher.get_pending_fetched_records().is_empty()); // The previous call should have drained this
+
+        let (highest_known_block_index, ingress_keys, missing_block_ranges) =
+            db_fetcher.get_highest_processed_block_context();
+        assert_eq!(
+            ingress_keys,
+            vec![IngressPublicKeyRecord {
+                key: ingress_key.clone(),
+                status: IngressPublicKeyStatus {
+                    start_block: 10,
+                    pubkey_expiry: 0,
+                    retired: false,
+                },
+                last_scanned_block: Some(19),
+            }]
+        );
+        assert_eq!(highest_known_block_index, 19);
+        assert!(missing_block_ranges.is_empty());
 
         // Add a few more blocks, they should get picked up.
         let mut blocks_and_records = Vec::new();
-        for i in 10..20 {
+        for i in 20..30 {
             let (block, records) = fog_test_infra::db_tests::random_block(&mut rng, i, 5); // 5 outputs per block
 
             db.add_block_data(&invoc_id1, &block, 0, &records).unwrap();
@@ -496,15 +525,86 @@ mod tests {
         assert_eq!(fetched_records.len(), blocks_and_records.len());
 
         for (i, fetched_record) in fetched_records.iter().enumerate() {
-            assert_eq!(fetched_record.ingest_invocation_id, invoc_id1);
-            assert_eq!(fetched_record.block_index, i as u64 + 10);
+            assert_eq!(fetched_record.ingress_key, ingress_key);
+            assert_eq!(fetched_record.block_index, i as u64 + 20);
             assert_eq!(blocks_and_records[i].1, fetched_record.records);
         }
 
         assert!(db_fetcher.get_pending_fetched_records().is_empty()); // The previous call should have drained this
 
+        let (highest_known_block_index, ingress_keys, missing_block_ranges) =
+            db_fetcher.get_highest_processed_block_context();
+        assert_eq!(
+            ingress_keys,
+            vec![IngressPublicKeyRecord {
+                key: ingress_key.clone(),
+                status: IngressPublicKeyStatus {
+                    start_block: 10,
+                    pubkey_expiry: 0,
+                    retired: false,
+                },
+                last_scanned_block: Some(29),
+            }]
+        );
+        assert_eq!(highest_known_block_index, 29);
+        assert!(missing_block_ranges.is_empty());
+
         // Add more blocks but this time leave a hole between the previous blocks and the new ones.
         // They should not get picked up untill a missed blocks range is reported.
+        let mut blocks_and_records_40_50 = Vec::new();
+        for i in 40..50 {
+            let (block, records) = fog_test_infra::db_tests::random_block(&mut rng, i, 5); // 5 outputs per block
+
+            db.add_block_data(&invoc_id1, &block, 0, &records).unwrap();
+            blocks_and_records_40_50.push((block, records));
+        }
+
+        sleep(Duration::from_secs(1)); // Supposedly enough time for at least some blocks to get picked up.
+
+        assert!(db_fetcher.get_pending_fetched_records().is_empty());
+
+        // TODO The last scanned block index gets updated even though we have a hole.
+        // I am not sure this is desirable...
+        let (highest_known_block_index, ingress_keys, missing_block_ranges) =
+            db_fetcher.get_highest_processed_block_context();
+        assert_eq!(
+            ingress_keys,
+            vec![IngressPublicKeyRecord {
+                key: ingress_key.clone(),
+                status: IngressPublicKeyStatus {
+                    start_block: 10,
+                    pubkey_expiry: 0,
+                    retired: false,
+                },
+                last_scanned_block: Some(49),
+            }]
+        );
+        assert_eq!(highest_known_block_index, 49);
+        assert!(missing_block_ranges.is_empty());
+
+        // Report a missing block range. This should have no effect.
+        db.report_missed_block_range(&BlockRange::new(30, 40))
+            .unwrap();
+
+        sleep(Duration::from_secs(1)); // Supposedly enough time for at least some blocks to get picked up.
+
+        assert!(db_fetcher.shared_state().fetched_records.is_empty());
+
+        // Retire our key at block 45, and provide blocks 30-39 (we previously provided
+        // 40-49)
+        // We should only get block data for blocks 30-34.
+        db.set_report(
+            &ingress_key,
+            "",
+            &ReportData {
+                ingest_invocation_id: None,
+                report: create_report(""),
+                pubkey_expiry: 45,
+            },
+        )
+        .unwrap();
+        db.retire_ingress_key(&ingress_key, true).unwrap();
+
         let mut blocks_and_records = Vec::new();
         for i in 30..40 {
             let (block, records) = fog_test_infra::db_tests::random_block(&mut rng, i, 5); // 5 outputs per block
@@ -515,20 +615,10 @@ mod tests {
 
         sleep(Duration::from_secs(1)); // Supposedly enough time for at least some blocks to get picked up.
 
-        assert!(db_fetcher.get_pending_fetched_records().is_empty());
-
-        // Report a missing block range.
-        db.report_missed_block_range(&BlockRange::new(20, 30))
-            .unwrap();
-
-        sleep(Duration::from_secs(1)); // Supposedly enough time for at least some blocks to get picked up.
-
-        assert!(!db_fetcher.shared_state().fetched_records.is_empty());
-
         for _i in 0..500 {
             let num_fetched_records = db_fetcher.shared_state().fetched_records.len();
-            // The missed bloks also result in fetched_records, hence the +10
-            if num_fetched_records >= blocks_and_records.len() + 10 {
+            // We expect 15 blocks (30-44)
+            if num_fetched_records >= blocks_and_records.len() + 15 {
                 break;
             }
 
@@ -536,54 +626,50 @@ mod tests {
         }
 
         let fetched_records = db_fetcher.get_pending_fetched_records();
-        assert_eq!(fetched_records.len(), blocks_and_records.len() + 10);
+        assert_eq!(fetched_records.len(), blocks_and_records.len() + 5);
+
+        blocks_and_records.extend(blocks_and_records_40_50);
 
         for (i, fetched_record) in fetched_records.iter().enumerate() {
-            assert_eq!(fetched_record.ingest_invocation_id, invoc_id1);
-            assert_eq!(fetched_record.block_index, i as u64 + 20);
-            // First 10 blocks are missed
-            if i < 10 {
-                assert_eq!(fetched_record.records, vec![]); // missed blocks
-            } else {
-                assert_eq!(fetched_record.records, blocks_and_records[i - 10].1);
-            }
+            assert_eq!(fetched_record.ingress_key, ingress_key);
+            assert_eq!(fetched_record.block_index, i as u64 + 30);
+            assert_eq!(fetched_record.records, blocks_and_records[i].1);
         }
 
         assert!(db_fetcher.get_pending_fetched_records().is_empty()); // The previous call should have drained this
     }
 
     #[test_with_logger]
-    fn test_overlapping_ranges(logger: Logger) {
+    fn test_overlapping_keys(logger: Logger) {
         let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
         let db_test_context = SqlRecoveryDbTestContext::new(logger.clone());
         let db = db_test_context.get_db_instance();
         let db_fetcher = DbFetcher::new(db.clone(), logger);
 
-        // Register two ingest invocations that have some overlap:
-        // invoc_id1 starts at block 0, invoc_id2 starts at block 5.
-        let key1 = CompressedRistrettoPublic::from(RistrettoPublic::from_random(&mut rng));
+        // Register two ingress keys that have some overlap:
+        // key_id1 starts at block 0, key2 starts at block 5.
+        let key1 = CompressedRistrettoPublic::from_random(&mut rng);
         db.new_ingress_key(&key1, 0).unwrap();
         let invoc_id1 = db
             .new_ingest_invocation(None, &key1, &random_kex_rng_pubkey(&mut rng), 0)
             .unwrap();
 
-        let key2 = CompressedRistrettoPublic::from(RistrettoPublic::from_random(&mut rng));
+        let key2 = CompressedRistrettoPublic::from_random(&mut rng);
         db.new_ingress_key(&key2, 5).unwrap();
         let invoc_id2 = db
             .new_ingest_invocation(None, &key2, &random_kex_rng_pubkey(&mut rng), 5)
             .unwrap();
 
-        // Add 10 blocks to both invocations and see that we are able to get both.
-
+        // Add 10 blocks to both keys and see that we are able to get both.
         let mut blocks_and_records = Vec::new();
         for i in 0..10 {
             let (block, records) = fog_test_infra::db_tests::random_block(&mut rng, i, 5); // 5 outputs per block
             db.add_block_data(&invoc_id1, &block, 0, &records).unwrap();
-            blocks_and_records.push((invoc_id1, block, records));
+            blocks_and_records.push((key1, block, records));
 
             let (block, records) = fog_test_infra::db_tests::random_block(&mut rng, i + 5, 5); // start block is 5
             db.add_block_data(&invoc_id2, &block, 0, &records).unwrap();
-            blocks_and_records.push((invoc_id2, block, records));
+            blocks_and_records.push((key2, block, records));
         }
 
         for _i in 0..500 {
@@ -599,55 +685,55 @@ mod tests {
         assert_eq!(fetched_records.len(), blocks_and_records.len());
 
         // Sort to make comparing easier
-        fetched_records.sort_by_key(|fr| (fr.ingest_invocation_id, fr.block_index));
+        fetched_records.sort_by_key(|fr| (fr.ingress_key, fr.block_index));
         blocks_and_records
-            .sort_by_key(|(invoc_id, block, _records)| (invoc_id.clone(), block.index));
+            .sort_by_key(|(ingress_key, block, _records)| (ingress_key.clone(), block.index));
 
         for (i, fetched_record) in fetched_records.iter().enumerate() {
-            assert_eq!(fetched_record.ingest_invocation_id, blocks_and_records[i].0);
+            assert_eq!(fetched_record.ingress_key, blocks_and_records[i].0);
             assert_eq!(fetched_record.block_index, blocks_and_records[i].1.index);
             assert_eq!(blocks_and_records[i].2, fetched_record.records);
         }
     }
 
     #[test_with_logger]
-    fn test_non_overlapping_ranges(logger: Logger) {
+    fn test_non_overlapping_keys(logger: Logger) {
         let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
         let db_test_context = SqlRecoveryDbTestContext::new(logger.clone());
         let db = db_test_context.get_db_instance();
         let db_fetcher = DbFetcher::new(db.clone(), logger);
 
-        // Register two ingest invocations that have some overlap:
+        // Register two ingress keys that have some overlap:
         // invoc_id1 starts at block 0, invoc_id2 starts at block 50.
-        let key1 = CompressedRistrettoPublic::from(RistrettoPublic::from_random(&mut rng));
+        let key1 = CompressedRistrettoPublic::from_random(&mut rng);
         db.new_ingress_key(&key1, 0).unwrap();
         let invoc_id1 = db
             .new_ingest_invocation(None, &key1, &random_kex_rng_pubkey(&mut rng), 0)
             .unwrap();
 
-        let key2 = CompressedRistrettoPublic::from(RistrettoPublic::from_random(&mut rng));
+        let key2 = CompressedRistrettoPublic::from_random(&mut rng);
         db.new_ingress_key(&key2, 50).unwrap();
         let invoc_id2 = db
             .new_ingest_invocation(None, &key2, &random_kex_rng_pubkey(&mut rng), 50)
             .unwrap();
 
-        // Add 10 blocks to both invocations and see that we are able to get both.
+        // Add 10 blocks to both keys and see that we are able to get both.
         let mut blocks_and_records = Vec::new();
         for i in 0..10 {
             let (block, records) = fog_test_infra::db_tests::random_block(&mut rng, i, 5); // 5 outputs per block
             db.add_block_data(&invoc_id1, &block, 0, &records).unwrap();
-            blocks_and_records.push((invoc_id1, block, records));
+            blocks_and_records.push((key1, block, records));
 
             let (block, records) = fog_test_infra::db_tests::random_block(&mut rng, i + 50, 5); // start block is 50
             db.add_block_data(&invoc_id2, &block, 0, &records).unwrap();
-            blocks_and_records.push((invoc_id2, block, records));
+            blocks_and_records.push((key2, block, records));
         }
 
         // Add a few more blocks to invoc_id2
         for i in 10..20 {
             let (block, records) = fog_test_infra::db_tests::random_block(&mut rng, i + 50, 5); // start block is 50
             db.add_block_data(&invoc_id2, &block, 0, &records).unwrap();
-            blocks_and_records.push((invoc_id2, block, records));
+            blocks_and_records.push((key2, block, records));
         }
 
         for _i in 0..500 {
@@ -663,14 +749,27 @@ mod tests {
         assert_eq!(fetched_records.len(), blocks_and_records.len());
 
         // Sort to make comparing easier
-        fetched_records.sort_by_key(|fr| (fr.ingest_invocation_id, fr.block_index));
+        fetched_records.sort_by_key(|fr| (fr.ingress_key, fr.block_index));
         blocks_and_records
-            .sort_by_key(|(invoc_id, block, _records)| (invoc_id.clone(), block.index));
+            .sort_by_key(|(ingress_key, block, _records)| (ingress_key.clone(), block.index));
 
         for (i, fetched_record) in fetched_records.iter().enumerate() {
-            assert_eq!(fetched_record.ingest_invocation_id, blocks_and_records[i].0);
+            assert_eq!(fetched_record.ingress_key, blocks_and_records[i].0);
             assert_eq!(fetched_record.block_index, blocks_and_records[i].1.index);
             assert_eq!(blocks_and_records[i].2, fetched_record.records);
+        }
+    }
+
+    fn create_report(name: &str) -> VerificationReport {
+        let chain = pem::parse_many(mc_crypto_x509_test_vectors::ok_rsa_chain_25519_leaf().0)
+            .into_iter()
+            .map(|p| p.contents)
+            .collect();
+
+        VerificationReport {
+            sig: format!("{} sig", name).into_bytes().into(),
+            chain,
+            http_body: format!("{} body", name),
         }
     }
 }
