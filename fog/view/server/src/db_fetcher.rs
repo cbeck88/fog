@@ -377,9 +377,7 @@ mod tests {
         let db_fetcher = DbFetcher::new(db.clone(), logger);
 
         // Initially, our database starts empty.
-        let (highest_known_block_index, ingress_keys, missing_block_ranges) =
-            db_fetcher.get_highest_processed_block_context();
-        assert_eq!(highest_known_block_index, 0);
+        let (ingress_keys, missing_block_ranges) = db_fetcher.get_highest_processed_block_context();
         assert!(ingress_keys.is_empty());
         assert!(missing_block_ranges.is_empty());
         assert!(db_fetcher.get_pending_fetched_records().is_empty());
@@ -406,6 +404,7 @@ mod tests {
                         start_block: 10,
                         pubkey_expiry: 0,
                         retired: false,
+                        lost: false,
                     },
                     last_scanned_block: None,
                 }]
@@ -454,8 +453,7 @@ mod tests {
 
         assert!(db_fetcher.get_pending_fetched_records().is_empty()); // The previous call should have drained this
 
-        let (highest_known_block_index, ingress_keys, missing_block_ranges) =
-            db_fetcher.get_highest_processed_block_context();
+        let (ingress_keys, missing_block_ranges) = db_fetcher.get_highest_processed_block_context();
         assert_eq!(
             ingress_keys,
             vec![IngressPublicKeyRecord {
@@ -464,11 +462,11 @@ mod tests {
                     start_block: 10,
                     pubkey_expiry: 0,
                     retired: false,
+                    lost: false,
                 },
                 last_scanned_block: Some(19),
             }]
         );
-        assert_eq!(highest_known_block_index, 19);
         assert!(missing_block_ranges.is_empty());
 
         // Add a few more blocks, they should get picked up.
@@ -500,8 +498,7 @@ mod tests {
 
         assert!(db_fetcher.get_pending_fetched_records().is_empty()); // The previous call should have drained this
 
-        let (highest_known_block_index, ingress_keys, missing_block_ranges) =
-            db_fetcher.get_highest_processed_block_context();
+        let (ingress_keys, missing_block_ranges) = db_fetcher.get_highest_processed_block_context();
         assert_eq!(
             ingress_keys,
             vec![IngressPublicKeyRecord {
@@ -510,11 +507,11 @@ mod tests {
                     start_block: 10,
                     pubkey_expiry: 0,
                     retired: false,
+                    lost: false,
                 },
                 last_scanned_block: Some(29),
             }]
         );
-        assert_eq!(highest_known_block_index, 29);
         assert!(missing_block_ranges.is_empty());
 
         // Add more blocks but this time leave a hole between the previous blocks and the new ones.
@@ -542,16 +539,12 @@ mod tests {
                     start_block: 10,
                     pubkey_expiry: 0,
                     retired: false,
+                    lost: false,
                 },
                 last_scanned_block: Some(49),
             }]
         );
-        assert_eq!(highest_known_block_index, 49);
         assert!(missing_block_ranges.is_empty());
-
-        // Report a missing block range. This should have no effect.
-        db.report_missed_block_range(&BlockRange::new(30, 40))
-            .unwrap();
 
         sleep(Duration::from_secs(1)); // Supposedly enough time for at least some blocks to get picked up.
 

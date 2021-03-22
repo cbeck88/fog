@@ -4,10 +4,7 @@ use fog_kex_rng::KexRngPubkey;
 use fog_recovery_db_iface::{
     ETxOutRecord, FogUserEvent, IngestInvocationId, IngressPublicKeyStatus, RecoveryDb,
 };
-use fog_types::{
-    common::BlockRange,
-    view::{RngRecord, TxOutSearchResultCode},
-};
+use fog_types::view::{RngRecord, TxOutSearchResultCode};
 use mc_crypto_keys::{CompressedRistrettoPublic, RistrettoPublic};
 use mc_transaction_core::{Block, BlockID, BLOCK_VERSION};
 use mc_util_from_random::FromRandom;
@@ -170,57 +167,8 @@ pub fn recovery_db_smoke_tests_new_apis<DB: RecoveryDb>(
 
 // Basic tests that missed blocks reporting works as expected
 pub fn recovery_db_missed_blocks_reporting(_rng: &mut impl RngCore, db: &impl RecoveryDb) {
-    let (user_events, _next_start_from_user_event_id) = db.search_user_events(0).unwrap();
-    assert_eq!(user_events.len(), 0);
-
-    let missed_block_ranges = db.get_missed_block_ranges().unwrap();
-    assert_eq!(missed_block_ranges.len(), 0);
-
-    // Check that inserting an empty block range is rejected and doesn't change things
-    assert!(!db.report_missed_block_range(&BlockRange::new(1, 1)).is_ok());
-
-    let (user_events, _next_start_from_user_event_id) = db.search_user_events(0).unwrap();
-    assert_eq!(user_events.len(), 0);
-
-    let missed_block_ranges = db.get_missed_block_ranges().unwrap();
-    assert_eq!(missed_block_ranges.len(), 0);
-
-    // Check that inserting a block range [1, 3] works and advances num_blocks
-    let ok_block_range = BlockRange::new(1, 3);
-    db.report_missed_block_range(&ok_block_range).unwrap();
-
-    let (user_events, _next_start_from_user_event_id) = db.search_user_events(0).unwrap();
-    assert_eq!(
-        user_events,
-        vec![FogUserEvent::MissingBlocks(ok_block_range.clone())]
-    );
-
-    let missed_block_ranges = db.get_missed_block_ranges().unwrap();
-    assert_eq!(missed_block_ranges, vec![ok_block_range.clone()]);
-
-    // Check that inserting a block range [2, 4] fails because it overlaps
-    assert!(!db.report_missed_block_range(&BlockRange::new(2, 4)).is_ok());
-
-    let (user_events, _next_start_from_user_event_id) = db.search_user_events(0).unwrap();
-    assert_eq!(
-        user_events,
-        vec![FogUserEvent::MissingBlocks(ok_block_range.clone())]
-    );
-
-    let missed_block_ranges = db.get_missed_block_ranges().unwrap();
-    assert_eq!(missed_block_ranges, vec![ok_block_range.clone()]);
-
-    // Check that inserting a block range [0, 4] fails because it overlaps
-    assert!(!db.report_missed_block_range(&BlockRange::new(0, 4)).is_ok());
-
-    let (user_events, _next_start_from_user_event_id) = db.search_user_events(0).unwrap();
-    assert_eq!(
-        user_events,
-        vec![FogUserEvent::MissingBlocks(ok_block_range.clone())]
-    );
-
-    let missed_block_ranges = db.get_missed_block_ranges().unwrap();
-    assert_eq!(missed_block_ranges, vec![ok_block_range]);
+    drop(db);
+    unimplemented!();
 }
 
 // Basic tests that rng records decommissioning works as expected
@@ -498,6 +446,7 @@ pub fn test_recovery_db_ingress_keys<DB: RecoveryDb>(
             start_block: 1,
             pubkey_expiry: 0,
             retired: false,
+            lost: false,
         })
     );
 
@@ -513,6 +462,7 @@ pub fn test_recovery_db_ingress_keys<DB: RecoveryDb>(
             start_block: 10,
             pubkey_expiry: 0,
             retired: false,
+            lost: false,
         })
     );
 
@@ -525,6 +475,7 @@ pub fn test_recovery_db_ingress_keys<DB: RecoveryDb>(
             start_block: 1,
             pubkey_expiry: 0,
             retired: false,
+            lost: false,
         })
     );
 
@@ -534,6 +485,7 @@ pub fn test_recovery_db_ingress_keys<DB: RecoveryDb>(
             start_block: 10,
             pubkey_expiry: 0,
             retired: false,
+            lost: false,
         })
     );
 
@@ -545,6 +497,7 @@ pub fn test_recovery_db_ingress_keys<DB: RecoveryDb>(
             start_block: 1,
             pubkey_expiry: 0,
             retired: true,
+            lost: false,
         })
     );
 
@@ -556,6 +509,7 @@ pub fn test_recovery_db_ingress_keys<DB: RecoveryDb>(
             start_block: 1,
             pubkey_expiry: 0,
             retired: false,
+            lost: false,
         })
     );
 

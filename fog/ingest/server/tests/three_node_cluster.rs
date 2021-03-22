@@ -7,7 +7,7 @@ use fog_ingest_server::{
     server::{IngestServer, IngestServerConfig},
     state_file::StateFile,
 };
-use fog_recovery_db_iface::{BlockRange, IngestInvocationId, RecoveryDb};
+use fog_recovery_db_iface::{IngestInvocationId, RecoveryDb};
 use fog_sql_recovery_db::{test_utils::SqlRecoveryDbTestContext, SqlRecoveryDb};
 use fog_test_infra::get_enclave_path;
 use fog_uri::{FogIngestUri, IngestPeerUri};
@@ -232,14 +232,6 @@ fn three_node_cluster_activation_retiry(logger: Logger) {
         .append_block(&origin_block, &origin_contents, None)
         .expect("failed writing initial transactions");
 
-    // report a missed block corresponding to origin block, until fog-393
-    recovery_db
-        .report_missed_block_range(&BlockRange {
-            start_block: 0,
-            end_block: 1,
-        })
-        .unwrap();
-
     // there will be 3 peers in the cluster
     let peer_indices = vec![0u16, 1u16, 2u16];
 
@@ -453,14 +445,6 @@ fn three_node_cluster_fencing(logger: Logger) {
     ledger
         .append_block(&origin_block, &origin_contents, None)
         .expect("failed writing initial transactions");
-
-    // report a missed block, until fog-393
-    recovery_db
-        .report_missed_block_range(&BlockRange {
-            start_block: 0,
-            end_block: 1,
-        })
-        .unwrap();
 
     // Do three repetitions of the whole thing
     for _ in 0..3 {

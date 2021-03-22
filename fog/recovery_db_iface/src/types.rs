@@ -20,6 +20,11 @@ pub struct IngressPublicKeyStatus {
     /// Whether this key is retiring / retired.
     /// When a key is retired, we stop publishing reports about it.
     pub retired: bool,
+    /// Whether this key is lost
+    /// When a key is lost, we no longer have it and no blocks can be scanned with it anymore.
+    /// To enable the view server to make progress, the remaining blocks we promised to scan are "missed"
+    /// and the users learn about them as missed blocks, which they have to download.
+    pub lost: bool,
 }
 
 impl IngressPublicKeyStatus {

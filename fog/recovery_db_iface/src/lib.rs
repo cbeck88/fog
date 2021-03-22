@@ -136,23 +136,33 @@ pub trait RecoveryDb {
         txs: &[ETxOutRecord],
     ) -> Result<AddBlockDataStatus, Self::Error>;
 
-    /// Report that a half-open range of blocks has been missed irrecoverably.
+    /// Report that an ingress key has been lost irrecoverably.
     ///
-    /// Clients that hit the view node will learn about the range. Then they have to download
-    /// missed blocks from the fog ledger server, and then view-key scan them to recover
-    /// their transactions.
+    /// This occurs if all the enclaves that have the key are lost.
+    /// If we have not scanned all the blocks up to pubkey_expiry for this key,
+    /// then the remaining blocks are "missed blocks", and clients will have to download
+    /// these blocks and view-key scan them.
     ///
-    /// If blocks are missed but this call is never made, then clients will never be able
-    /// to compute an accurate balance after `start`. highest_processed_block_count will always be computed
-    /// as less than any missed block (gap in the data), until a range covering that gap is reported
-    /// permanently missed.
-    /// This means that the database does the right thing to fulfill the client contract automatically
-    /// in the face of missed blocks, but actively reporting missed block range is required to allow
-    /// progress by the client.
+    /// When this call is made,
+    /// * the key is marked as lost in the database,
+    /// * the half-open range [last-scanned + 1, pubkey_expiry) is registered as a missed block range,
+    ///   if that range is not empty.
+    ///
+    /// When all the enclaves that have the key are lost, but the key is not reported lost,
+    /// the view server will be blocked from increasing "highest_processed_block_count" value,
+    /// because it is still expecting more data to be produced against this key.
+    /// From the client's point of view, it is as if fog stopped making progress relative to the ledger,
+    /// but the balance check process still returns a balance that was correct at that point in time.
+    ///
+    /// Once a key is published to the users, producing more blocks scanned with it, or reporting the key lost,
+    /// is the only way to allow the view server to make progress, so that clients do not compute incorrect balances.
     ///
     /// Arguments:
-    /// * block_range: The missing block range.
-    fn report_missed_block_range(&self, block_range: &BlockRange) -> Result<(), Self::Error>;
+    /// * ingress_key: The ingress key that is marked lost.
+    fn report_lost_ingress_key(
+        &self,
+        lost_ingress_key: CompressedRistrettoPublic,
+    ) -> Result<(), Self::Error>;
 
     /// Gets all the known missed block ranges.
     ///

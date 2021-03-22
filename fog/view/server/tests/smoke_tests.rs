@@ -8,6 +8,10 @@
 // It exercises both the ingest enclave, and the fog-related crypto that makes
 // its way into the client.
 
+// FIXME: Fix unreachable code
+#![allow(unreachable_code)]
+#![allow(unused)]
+
 use fog_kex_rng::KexRngPubkey;
 use fog_recovery_db_iface::RecoveryDb;
 use fog_sql_recovery_db::{test_utils::SqlRecoveryDbTestContext, SqlRecoveryDb};
@@ -187,8 +191,8 @@ fn test_view_integration(view_omap_capacity: u64, logger: Logger) {
     )
     .unwrap();
 
-    db.report_missed_block_range(&BlockRange::new(3, 4))
-        .unwrap();
+    // Block 3 is missing
+    unimplemented!();
 
     db.add_block_data(
         &invoc_id2,
@@ -666,8 +670,7 @@ fn test_start_with_missing_range(logger: Logger) {
     assert_e_tx_out_records_sanity(&mut view_client, &expected_records, &logger);
 
     // Adding a missing block range should advance highest processed block count.
-    db.report_missed_block_range(&BlockRange::new(0, 10))
-        .unwrap();
+    unimplemented!();
 
     let mut allowed_tries = 60usize;
     loop {
@@ -713,8 +716,7 @@ fn test_middle_missing_range_with_decommission(logger: Logger) {
     }
 
     // Blocks 5-10 are missing.
-    db.report_missed_block_range(&BlockRange::new(5, 10))
-        .unwrap();
+    unimplemented!();
 
     // invoc_id2 starts at block 10
     let invoc_id2 = db

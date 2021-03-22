@@ -234,6 +234,7 @@ mod tests {
                 start_block: 123,
                 pubkey_expiry: 173,
                 retired: false,
+                lost: false,
             },
             last_scanned_block: None,
         };
@@ -270,6 +271,7 @@ mod tests {
                 start_block: 123,
                 pubkey_expiry: 173,
                 retired: false,
+                lost: false,
             },
             last_scanned_block: Some(126),
         };
@@ -307,6 +309,7 @@ mod tests {
                 start_block: 123,
                 pubkey_expiry: 173,
                 retired: true,
+                lost: false,
             },
             last_scanned_block: None,
         };
@@ -337,7 +340,7 @@ mod tests {
 
         // Now, we have scanned everything we have promised to scan, next blocks should return empty.
         let expected_state = HashMap::from_iter(vec![]);
-        assert_eq!(block_tracker.next_blocks(&[rec.clone()]),);
+        assert_eq!(block_tracker.next_blocks(&[rec.clone()]), expected_state);
     }
 
     // Single ingestable range (decommissioned, scanned some blocks)
@@ -354,6 +357,7 @@ mod tests {
                 start_block: 123,
                 pubkey_expiry: 173,
                 retired: true,
+                lost: false,
             },
             last_scanned_block: Some(last_ingested_block),
         };
@@ -394,6 +398,7 @@ mod tests {
                 start_block: 123,
                 pubkey_expiry: 200,
                 retired: false,
+                lost: false,
             },
             last_scanned_block: None,
         };
@@ -403,6 +408,7 @@ mod tests {
                 start_block: 3000,
                 pubkey_expiry: 200,
                 retired: false,
+                lost: false,
             },
             last_scanned_block: None,
         };
@@ -447,49 +453,15 @@ mod tests {
     fn highest_fully_processed_block_count_all_empty(logger: Logger) {
         let mut block_tracker = BlockTracker::new(logger.clone());
 
-        // higehst_known_block_index shouldn't affect these tests so we try a bunch of options
-        for highest_known_block_index in 0..20 {
-            assert_eq!(
-                block_tracker.highest_fully_processed_block_count(&[], &[]),
-                (0, None)
-            );
-        }
-        todo!()
-    }
+        assert_eq!(
+            block_tracker.highest_fully_processed_block_count(&[], &[]),
+            (0, None)
+        );
 
-    // A missing range that doesn't start at block 0 should not affect the count.
-    #[test_with_logger]
-    fn highest_fully_processed_block_count_some_missing_blocks(logger: Logger) {
-        let mut block_tracker = BlockTracker::new(logger.clone());
-
-        // higehst_known_block_index shouldn't affect these tests so we try a bunch of options
-        for highest_known_block_index in 0..20 {
-            assert_eq!(
-                block_tracker.highest_fully_processed_block_count(&[], &[BlockRange::new(1, 10)]),
-                (0, None)
-            );
-        }
-        todo!()
-    }
-
-    // A missing range that does start at block 0 should advance the count to the end of the
-    // range.
-    #[test_with_logger]
-    fn highest_fully_processed_block_count_starts_with_missing_blocks(logger: Logger) {
-        let mut block_tracker = BlockTracker::new(logger.clone());
-
-        // higehst_known_block_index shouldn't affect these tests so we try a bunch of options
-        for highest_known_block_index in 0..20 {
-            assert_eq!(
-                block_tracker.highest_fully_processed_block_count(
-                    highest_known_block_index,
-                    &[],
-                    &[BlockRange::new(0, 10)]
-                ),
-                (10, None)
-            );
-        }
-        todo!()
+        assert_eq!(
+            block_tracker.highest_fully_processed_block_count(&[], &[BlockRange::new(1, 10)]),
+            (0, None)
+        );
     }
 
     // Multiple missing ranges are handled appropriately
@@ -498,16 +470,13 @@ mod tests {
         let mut block_tracker = BlockTracker::new(logger.clone());
 
         // higehst_known_block_index shouldn't affect these tests so we try a bunch of options
-        for highest_known_block_index in 0..20 {
-            assert_eq!(
-                block_tracker.highest_fully_processed_block_count(
-                    highest_known_block_index,
-                    &[],
-                    &[BlockRange::new(0, 10), BlockRange::new(20, 30)]
-                ),
-                (10, None)
-            );
-        }
+        assert_eq!(
+            block_tracker.highest_fully_processed_block_count(
+                &[],
+                &[BlockRange::new(0, 10), BlockRange::new(20, 30)]
+            ),
+            (10, None)
+        );
         todo!()
     }
 
@@ -518,7 +487,6 @@ mod tests {
 
         assert_eq!(
             block_tracker.highest_fully_processed_block_count(
-                100,
                 &[],
                 &[
                     BlockRange::new(0, 10),
@@ -531,7 +499,6 @@ mod tests {
 
         assert_eq!(
             block_tracker.highest_fully_processed_block_count(
-                25, // This should cap us
                 &[],
                 &[
                     BlockRange::new(0, 10),
@@ -539,7 +506,7 @@ mod tests {
                     BlockRange::new(10, 20)
                 ]
             ),
-            (25, None),
+            (30, None),
         );
         todo!()
     }
@@ -555,18 +522,15 @@ mod tests {
                 start_block: 12,
                 pubkey_expiry: 17,
                 retired: false,
+                lost: false,
             },
             last_scanned_block: None,
         };
 
         // higehst_known_block_index shouldn't affect these tests so we try a bunch of options
-        for highest_known_block_index in 0..20 {
+        for _highest_known_block_index in 0..20 {
             assert_eq!(
-                block_tracker.highest_fully_processed_block_count(
-                    highest_known_block_index,
-                    &[rec.clone()],
-                    &[]
-                ),
+                block_tracker.highest_fully_processed_block_count(&[rec.clone()], &[]),
                 (0, None),
             );
         }
@@ -586,6 +550,7 @@ mod tests {
                 start_block: 12,
                 pubkey_expiry: 17,
                 retired: false,
+                lost: false,
             },
             last_scanned_block: None,
         };
@@ -610,20 +575,21 @@ mod tests {
                 start_block: 0,
                 pubkey_expiry: 17,
                 retired: false,
+                lost: false,
             },
             last_scanned_block: None,
         };
 
         for i in 0..10 {
             assert_eq!(
-                block_tracker.highest_fully_processed_block_count(0, &[rec.clone()], &[]),
+                block_tracker.highest_fully_processed_block_count(&[rec.clone()], &[]),
                 (rec.status.start_block + i, None)
             );
 
             block_tracker.block_processed(rec.key, rec.status.start_block + i);
 
             assert_eq!(
-                block_tracker.highest_fully_processed_block_count(0, &[rec.clone()], &[]),
+                block_tracker.highest_fully_processed_block_count(&[rec.clone()], &[]),
                 (rec.status.start_block + i + 1, None)
             );
         }
@@ -643,20 +609,21 @@ mod tests {
                 start_block: 10,
                 pubkey_expiry: 17,
                 retired: false,
+                lost: false,
             },
             last_scanned_block: None,
         };
 
         for i in 0..10 {
             assert_eq!(
-                block_tracker.highest_fully_processed_block_count(0, &[rec.clone()], &[]),
+                block_tracker.highest_fully_processed_block_count(&[rec.clone()], &[]),
                 (0, None)
             );
 
             block_tracker.block_processed(rec.key, rec.status.start_block + i);
 
             assert_eq!(
-                block_tracker.highest_fully_processed_block_count(0, &[rec.clone()], &[]),
+                block_tracker.highest_fully_processed_block_count(&[rec.clone()], &[]),
                 (0, None)
             );
         }
@@ -676,6 +643,7 @@ mod tests {
                 start_block: 10,
                 pubkey_expiry: 17,
                 retired: false,
+                lost: false,
             },
             last_scanned_block: None,
         };
@@ -684,22 +652,14 @@ mod tests {
 
         for i in 0..10 {
             assert_eq!(
-                block_tracker.highest_fully_processed_block_count(
-                    0,
-                    &[rec.clone()],
-                    &missing_ranges
-                ),
+                block_tracker.highest_fully_processed_block_count(&[rec.clone()], &missing_ranges),
                 (rec.status.start_block + i, None)
             );
 
             block_tracker.block_processed(rec.key, rec.status.start_block + i);
 
             assert_eq!(
-                block_tracker.highest_fully_processed_block_count(
-                    0,
-                    &[rec.clone()],
-                    &missing_ranges
-                ),
+                block_tracker.highest_fully_processed_block_count(&[rec.clone()], &missing_ranges),
                 (rec.status.start_block + i + 1, None)
             );
         }
@@ -719,6 +679,7 @@ mod tests {
                 start_block: 0,
                 pubkey_expiry: 17,
                 retired: false,
+                lost: false,
             },
             last_scanned_block: None,
         };
@@ -731,11 +692,7 @@ mod tests {
 
         for i in 0..10 {
             assert_eq!(
-                block_tracker.highest_fully_processed_block_count(
-                    0,
-                    &[rec.clone()],
-                    &missing_ranges
-                ),
+                block_tracker.highest_fully_processed_block_count(&[rec.clone()], &missing_ranges),
                 (rec.status.start_block + i, None)
             );
 
@@ -744,20 +701,14 @@ mod tests {
             // The last iteration moves ahead due to the missed block ranges.
             if i == 9 {
                 assert_eq!(
-                    block_tracker.highest_fully_processed_block_count(
-                        0,
-                        &[rec.clone()],
-                        &missing_ranges
-                    ),
+                    block_tracker
+                        .highest_fully_processed_block_count(&[rec.clone()], &missing_ranges),
                     (30, None)
                 );
             } else {
                 assert_eq!(
-                    block_tracker.highest_fully_processed_block_count(
-                        0,
-                        &[rec.clone()],
-                        &missing_ranges
-                    ),
+                    block_tracker
+                        .highest_fully_processed_block_count(&[rec.clone()], &missing_ranges),
                     (rec.status.start_block + i + 1, None)
                 );
             }
@@ -768,11 +719,7 @@ mod tests {
         for i in 10..30 {
             block_tracker.block_processed(rec.key, i);
             assert_eq!(
-                block_tracker.highest_fully_processed_block_count(
-                    0,
-                    &[rec.clone()],
-                    &missing_ranges
-                ),
+                block_tracker.highest_fully_processed_block_count(&[rec.clone()], &missing_ranges),
                 (30, None)
             );
         }
@@ -780,14 +727,14 @@ mod tests {
         // Process block #30, this should get us to #31
         block_tracker.block_processed(rec.key, 30);
         assert_eq!(
-            block_tracker.highest_fully_processed_block_count(0, &[rec.clone()], &missing_ranges),
+            block_tracker.highest_fully_processed_block_count(&[rec.clone()], &missing_ranges),
             (31, None)
         );
 
         // Process block 31, this should get us to 40 (due to missed range)
         block_tracker.block_processed(rec.key, 31);
         assert_eq!(
-            block_tracker.highest_fully_processed_block_count(0, &[rec.clone()], &missing_ranges),
+            block_tracker.highest_fully_processed_block_count(&[rec.clone()], &missing_ranges),
             (40, None)
         );
         todo!()
@@ -805,6 +752,7 @@ mod tests {
                 start_block: 0,
                 pubkey_expiry: 17,
                 retired: false,
+                lost: false,
             },
             last_scanned_block: None,
         };
@@ -814,17 +762,14 @@ mod tests {
                 start_block: 10,
                 pubkey_expiry: 17,
                 retired: false,
+                lost: false,
             },
             last_scanned_block: None,
         };
 
         // Initially, we're at 0.
         assert_eq!(
-            block_tracker.highest_fully_processed_block_count(
-                0,
-                &[rec1.clone(), rec2.clone()],
-                &[]
-            ),
+            block_tracker.highest_fully_processed_block_count(&[rec1.clone(), rec2.clone()], &[]),
             (0, None)
         );
 

@@ -166,6 +166,7 @@ impl SqlRecoveryDb {
                 start_block: key_records[0].start_block as u64,
                 pubkey_expiry: key_records[0].pubkey_expiry as u64,
                 retired: key_records[0].retired,
+                lost: key_records[0].lost,
             }))
         } else {
             Err(Error::IngressKeysSchemaViolation(format!(
@@ -199,6 +200,7 @@ impl RecoveryDb for SqlRecoveryDb {
             start_block: start_block as i64,
             pubkey_expiry: 0,
             retired: false,
+            lost: false,
         };
 
         let inserted_row_count = diesel::insert_into(schema::ingress_keys::table)
@@ -254,6 +256,7 @@ impl RecoveryDb for SqlRecoveryDb {
                 dsl::start_block,
                 dsl::pubkey_expiry,
                 dsl::retired,
+                dsl::lost,
                 diesel::dsl::sql::<diesel::sql_types::BigInt>(
                     "(SELECT MAX(block_number) FROM ingested_blocks WHERE ingress_keys.ingress_public_key = ingested_blocks.ingress_public_key)"
                 ).nullable(),
@@ -263,14 +266,29 @@ impl RecoveryDb for SqlRecoveryDb {
 
         // The list of fields here must match the .select() clause above.
         Ok(query
-            .load::<(SqlCompressedRistrettoPublic, i64, i64, bool, Option<i64>)>(&conn)?
+            .load::<(
+                SqlCompressedRistrettoPublic,
+                i64,
+                i64,
+                bool,
+                bool,
+                Option<i64>,
+            )>(&conn)?
             .into_iter()
             .map(
-                |(ingress_public_key, start_block, pubkey_expiry, retired, last_scanned_block)| {
+                |(
+                    ingress_public_key,
+                    start_block,
+                    pubkey_expiry,
+                    retired,
+                    lost,
+                    last_scanned_block,
+                )| {
                     let status = IngressPublicKeyStatus {
                         start_block: start_block as u64,
                         pubkey_expiry: pubkey_expiry as u64,
                         retired,
+                        lost,
                     };
 
                     IngressPublicKeyRecord {
@@ -449,27 +467,61 @@ impl RecoveryDb for SqlRecoveryDb {
         }
     }
 
-    fn report_missed_block_range(&self, block_range: &BlockRange) -> Result<(), Self::Error> {
-        if !block_range.is_valid() {
-            return Err(Error::InvalidMissedBlocksRange(block_range.clone()));
-        }
-
+    fn report_lost_ingress_key(
+        &self,
+        lost_ingress_key: CompressedRistrettoPublic,
+    ) -> Result<(), Self::Error> {
         let conn = self.pool.get()?;
 
         conn.build_transaction().read_write().run(|| {
-            // Check that there is no overlap with current ranges.
-            let missing_ranges = self.get_missed_block_ranges_impl(&conn)?;
-            for range in missing_ranges {
-                if range.overlaps(block_range) {
-                    return Err(Error::OverlappingMissedBlocksRange(
-                        block_range.clone(),
-                        range,
-                    ));
+            // Find the ingress key and update it to be marked lost
+            let key_bytes: &[u8] = lost_ingress_key.as_ref();
+            use schema::ingress_keys::dsl;
+            let key_records: Vec<models::IngressKey> =
+                diesel::update(dsl::ingress_keys.filter(dsl::ingress_public_key.eq(key_bytes)))
+                    .set(dsl::lost.eq(true))
+                    .get_results(&conn)?;
+
+            // Compute a missed block range based on looking at the key status,
+            // which is correct if no blocks have actually been scanned using the key.
+            let mut missed_block_range = if key_records.is_empty() {
+                return Err(Error::MissingIngressKey(lost_ingress_key));
+            } else if key_records.len() == 1 {
+                BlockRange {
+                    start_block: key_records[0].start_block as u64,
+                    end_block: key_records[0].pubkey_expiry as u64,
+                }
+            } else {
+                return Err(Error::IngressKeysSchemaViolation(format!(
+                    "Found multiple entries for key: {:?}",
+                    lost_ingress_key
+                )));
+            };
+
+            // Find the last scanned block index (if any block has been scanned with this key)
+            let maybe_block_index: Option<i64> = {
+                use schema::ingested_blocks::dsl;
+                dsl::ingested_blocks
+                    .filter(dsl::ingress_public_key.eq(key_bytes))
+                    .select(diesel::dsl::max(dsl::block_number))
+                    .first(&conn)?
+            };
+
+            if let Some(block_index) = maybe_block_index {
+                let block_index = block_index as u64;
+                if block_index + 1 >= missed_block_range.end_block {
+                    // There aren't actually any blocks that need to be scanned, so we are done
+                    // without creating a user event.
+                    return Ok(());
+                }
+                // If we did actually scan some blocks, then report a smaller range
+                if block_index + 1 > missed_block_range.start_block {
+                    missed_block_range.start_block = block_index + 1;
                 }
             }
 
             // Add new range.
-            let new_event = models::NewUserEvent::missing_blocks(block_range);
+            let new_event = models::NewUserEvent::missing_blocks(&missed_block_range);
 
             diesel::insert_into(schema::user_events::table)
                 .values(&new_event)
@@ -911,6 +963,7 @@ impl ReportDb for SqlRecoveryDb {
                             start_block: key_records[0].start_block as u64,
                             pubkey_expiry: key_records[0].pubkey_expiry as u64,
                             retired: key_records[0].retired,
+                            lost: key_records[0].lost,
                         }
                     }
                 };
@@ -1432,48 +1485,6 @@ mod tests {
     }
 
     #[test_with_logger]
-    fn test_report_missed_block_range(logger: Logger) {
-        let db_test_context = test_utils::SqlRecoveryDbTestContext::new(logger);
-        let db = db_test_context.get_db_instance();
-
-        // Reporting an invalid range should error.
-        assert!(db
-            .report_missed_block_range(&BlockRange::new(10, 10))
-            .is_err());
-        assert!(db
-            .report_missed_block_range(&BlockRange::new(11, 10))
-            .is_err());
-
-        // Reporting a valid range should succeed and generate the appropriate user events.
-        db.report_missed_block_range(&BlockRange::new(10, 20))
-            .unwrap();
-
-        let missed_ranges = db.get_missed_block_ranges().unwrap();
-        assert_eq!(missed_ranges.len(), 1);
-        assert_eq!(missed_ranges[0], BlockRange::new(10, 20));
-
-        // Attempting to add overlapping ranges should fail.
-        assert!(db
-            .report_missed_block_range(&BlockRange::new(5, 11))
-            .is_err());
-        assert!(db
-            .report_missed_block_range(&BlockRange::new(19, 30))
-            .is_err());
-        assert!(db
-            .report_missed_block_range(&BlockRange::new(1, 100))
-            .is_err());
-
-        // Adding a non-overlapping range should succeed.
-        db.report_missed_block_range(&BlockRange::new(0, 10))
-            .unwrap();
-
-        let missed_ranges = db.get_missed_block_ranges().unwrap();
-        assert_eq!(missed_ranges.len(), 2);
-        assert_eq!(missed_ranges[0], BlockRange::new(10, 20));
-        assert_eq!(missed_ranges[1], BlockRange::new(0, 10));
-    }
-
-    #[test_with_logger]
     fn test_search_user_events(logger: Logger) {
         let mut rng: StdRng = SeedableRng::from_seed([123u8; 32]);
         let db_test_context = test_utils::SqlRecoveryDbTestContext::new(logger);
@@ -1498,10 +1509,10 @@ mod tests {
         db.decommission_ingest_invocation(&invoc_ids[1]).unwrap();
 
         // Add two missing block records.
-        db.report_missed_block_range(&BlockRange::new(10, 20))
-            .unwrap();
-        db.report_missed_block_range(&BlockRange::new(30, 40))
-            .unwrap();
+        // db.report_missed_block_range(&BlockRange::new(10, 20))
+        //    .unwrap();
+        // db.report_missed_block_range(&BlockRange::new(30, 40))
+        //    .unwrap();
 
         // Search for events and verify the results.
         let (events, _) = db.search_user_events(0).unwrap();
@@ -1983,6 +1994,7 @@ mod tests {
                     start_block: 123,
                     pubkey_expiry: 0,
                     retired: false,
+                    lost: false,
                 },
                 last_scanned_block: None,
             }],
@@ -2001,6 +2013,7 @@ mod tests {
                         start_block: 123,
                         pubkey_expiry: 0,
                         retired: false,
+                        lost: false,
                     },
                     last_scanned_block: None,
                 },
@@ -2010,6 +2023,7 @@ mod tests {
                         start_block: 456,
                         pubkey_expiry: 0,
                         retired: false,
+                        lost: false,
                     },
                     last_scanned_block: None,
                 }
@@ -2036,6 +2050,7 @@ mod tests {
                             start_block: 123,
                             pubkey_expiry: 0,
                             retired: false,
+                            lost: false,
                         },
                         last_scanned_block: Some(block_id),
                     },
@@ -2045,6 +2060,7 @@ mod tests {
                             start_block: 456,
                             pubkey_expiry: 0,
                             retired: false,
+                            lost: false,
                         },
                         last_scanned_block: None,
                     }
@@ -2065,6 +2081,7 @@ mod tests {
                         start_block: 123,
                         pubkey_expiry: 0,
                         retired: false,
+                        lost: false,
                     },
                     last_scanned_block: Some(130),
                 },
@@ -2074,6 +2091,7 @@ mod tests {
                         start_block: 456,
                         pubkey_expiry: 0,
                         retired: false,
+                        lost: false,
                     },
                     last_scanned_block: None,
                 }
@@ -2092,6 +2110,7 @@ mod tests {
                         start_block: 123,
                         pubkey_expiry: 0,
                         retired: true,
+                        lost: false,
                     },
                     last_scanned_block: Some(130),
                 },
@@ -2101,6 +2120,7 @@ mod tests {
                         start_block: 456,
                         pubkey_expiry: 0,
                         retired: false,
+                        lost: false,
                     },
                     last_scanned_block: None,
                 }
@@ -2128,6 +2148,7 @@ mod tests {
                         start_block: 123,
                         pubkey_expiry: 0,
                         retired: true,
+                        lost: false,
                     },
                     last_scanned_block: Some(130),
                 },
@@ -2137,6 +2158,7 @@ mod tests {
                         start_block: 456,
                         pubkey_expiry: 888,
                         retired: false,
+                        lost: false,
                     },
                     last_scanned_block: None,
                 }
@@ -2169,6 +2191,7 @@ mod tests {
                             start_block: 123,
                             pubkey_expiry: 0,
                             retired: true,
+                            lost: false,
                         },
                         last_scanned_block: Some(130),
                     },
@@ -2178,6 +2201,7 @@ mod tests {
                             start_block: 456,
                             pubkey_expiry: 888,
                             retired: false,
+                            lost: false,
                         },
                         last_scanned_block: Some(block_id),
                     }
@@ -2194,6 +2218,7 @@ mod tests {
                     start_block: 456,
                     pubkey_expiry: 888,
                     retired: false,
+                    lost: false,
                 },
                 last_scanned_block: Some(460),
             }]
